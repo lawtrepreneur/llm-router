@@ -73,10 +73,10 @@
         ]
       },
       "heavy": {
-        "model": "anthropic/claude-fable-5",
+        "model": "anthropic/claude-fable-5-1",
         "variant": "max",
         "costRatio": 20,
-        "description": "Fable 5 max for architecture, complex debugging, and security",
+        "description": "Fable 5.1 max for architecture, complex debugging, and security",
         "steps": 120,
         "whenToUse": [
           "Architecture decisions",
@@ -99,10 +99,10 @@
         ]
       },
       "medium": {
-        "model": "openai/gpt-5.6-terra-fast",
+        "model": "openai/gpt-6-astra-fast",
         "variant": "high",
         "costRatio": 5,
-        "description": "GPT-5.6 Terra Fast (high) for implementation and standard coding",
+        "description": "GPT-5.6 Sol Fast (high) for implementation and standard coding",
         "steps": 50,
         "whenToUse": [
           "Feature implementation",
@@ -112,10 +112,10 @@
         ]
       },
       "heavy": {
-        "model": "openai/gpt-5.6-sol-fast",
-        "variant": "xhigh",
+        "model": "openai/gpt-6-astra-fast",
+        "variant": "max",
         "costRatio": 20,
-        "description": "GPT-5.6 Sol Fast (xhigh) for architecture and complex tasks",
+        "description": "GPT-6 Astra Fast (max) for architecture and complex tasks",
         "steps": 120,
         "whenToUse": [
           "Architecture decisions",
@@ -152,7 +152,7 @@
         ]
       },
       "heavy": {
-        "model": "github-copilot/claude-fable-5",
+        "model": "github-copilot/claude-fable-5-1",
         "costRatio": 20,
         "description": "Claude Fable 5 via GitHub Copilot for architecture, complex debugging, and security",
         "steps": 120,
@@ -246,9 +246,10 @@
     },
     "hybrid": {
       "fast": {
-        "model": "anthropic/claude-haiku-4-5",
+        "model": "openai/gpt-5.6-luna-fast",
+        "variant": "low",
         "costRatio": 1,
-        "description": "Haiku 4.5 for exploration, search, and simple reads",
+        "description": "GPT 5.6 Luna (low) for exploration, search, and simple reads",
         "steps": 30,
         "whenToUse": [
           "Codebase exploration and search",
@@ -258,10 +259,10 @@
         ]
       },
       "medium": {
-        "model": "openai/gpt-5.6-terra-fast",
-        "variant": "high",
+        "model": "openai/gpt-6-astra-fast",
+        "variant": "low",
         "costRatio": 5,
-        "description": "GPT-5.6 Terra Fast (high) for implementation and standard coding",
+        "description": "GPT-6 Astra Fast (low) for implementation and standard coding",
         "steps": 50,
         "whenToUse": [
           "Feature implementation",
@@ -271,10 +272,10 @@
         ]
       },
       "heavy": {
-        "model": "anthropic/claude-opus-5",
+        "model": "anthropic/claude-fable-5-1",
         "variant": "max",
         "costRatio": 20,
-        "description": "Claude Opus 5 max for architecture, complex debugging, and security",
+        "description": "Claude Fable 5.1 max for architecture, complex debugging, and security",
         "steps": 120,
         "whenToUse": [
           "Architecture decisions",
@@ -286,7 +287,7 @@
     },
     "fable-effort": {
       "fast": {
-        "model": "anthropic/claude-fable-5",
+        "model": "anthropic/claude-fable-5-1",
         "effort": "low",
         "costRatio": 1,
         "description": "Fable 5 at low effort for exploration, search, and simple reads (token-spend ratios are estimates; same model across tiers preserves prompt cache)",
@@ -299,7 +300,7 @@
         ]
       },
       "medium": {
-        "model": "anthropic/claude-fable-5",
+        "model": "anthropic/claude-fable-5-1",
         "effort": "high",
         "costRatio": 3,
         "description": "Fable 5 at high effort for implementation and standard coding (costRatio is an estimated token-spend multiplier, not a price difference)",
@@ -312,7 +313,7 @@
         ]
       },
       "heavy": {
-        "model": "anthropic/claude-fable-5",
+        "model": "anthropic/claude-fable-5-1",
         "effort": "xhigh",
         "costRatio": 6,
         "description": "Fable 5 at xhigh effort for architecture, complex debugging, and security (costRatio is an estimated token-spend multiplier, not a price difference)",
