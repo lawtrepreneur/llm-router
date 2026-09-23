@@ -13,6 +13,10 @@ An empty result is a result. Search tools honour .gitignore, so a "no matches" a
 
 Read-only budget: 8 calls. The runtime appends [cap: N/MAX] and [⚠ REDUNDANT] to results. Reading a different region of a file you have already opened is NOT a redundant read.
 
+CAP:8
+
+To change the budget, put CAP:N or CAP:none accompanied by a reason: line in the dispatch.
+
 A hand-back with zero tool calls is recorded as a false refusal.`;
 
 describe("buildDispatchHeader", () => {
@@ -23,7 +27,7 @@ describe("buildDispatchHeader", () => {
 
   it("renders the uncapped variant", () => {
     expect(buildDispatchHeader({ ...input, cap: "none" })).toBe(
-      expected.replace("Read-only budget: 8 calls.", "Read-only budget: uncapped for this dispatch."),
+      expected.replace("Read-only budget: 8 calls.", "Read-only budget: uncapped for this dispatch.").replace("CAP:8", "CAP:none"),
     );
   });
 

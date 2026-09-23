@@ -26,6 +26,10 @@ export function buildDispatchHeader(input: {
     'Tool names mentioned in this dispatch are descriptive and vary by provider; your own tool schema is the authority on what you can do. Never refuse or hand back work because a named tool looks unfamiliar or missing — attempt it, and if you cannot finish, name the specific step that failed.',
     'An empty result is a result. Search tools honour .gitignore, so a "no matches" answer inside an ignored path means the filter applied, not that your tools are broken; use a shell ripgrep with --no-ignore there before concluding anything is absent.',
     `${input.cap === "none" ? "Read-only budget: uncapped for this dispatch." : `Read-only budget: ${input.cap} calls.`} The runtime appends [cap: N/MAX] and [⚠ REDUNDANT] to results. Reading a different region of a file you have already opened is NOT a redundant read.`,
+    // The parser takes the first directive: pin the resolved budget before the
+    // instructional CAP:none example, which must not override the real dispatch.
+    `CAP:${input.cap}`,
+    'To change the budget, put CAP:N or CAP:none accompanied by a reason: line in the dispatch.',
     'A hand-back with zero tool calls is recorded as a false refusal.',
   );
   return paragraphs.join("\n\n");
