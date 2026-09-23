@@ -9,6 +9,8 @@ export interface Verdict {
   outcome?: "pass" | "fail" | "unverifiable";
   /** Checks that could not be performed; never evidence of producer failure. */
   caveats?: string[];
+  /** Successful comparisons that must not be mistaken for a green suite. */
+  notes?: string[];
   method: VerifyMethod;
   reasons: string[];
   evidence?: string;
@@ -37,6 +39,8 @@ export interface MutexRegistry {
 }
 
 export interface DeterministicDeps {
+  /** Bound to the original dispatch, not looked up using the after-state diff. */
+  testBaseline?: (command: string) => Promise<import("./baseline").TestBaseline | undefined>;
   /** Preserve completed failures if an outer gate budget expires later. */
   onFailure?: (reason: string) => void;
   exec: ExecSeam;

@@ -1,6 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ModelRouterPlugin from "../../src/index";
 import { invalidateConfigCache, loadConfig } from "../../src/router/config";
+// Keep this hook test independent of Git processes and background suite runs.
+vi.mock("../../src/verify/tree", () => ({ snapshotTree: async () => undefined }));
 
 async function captureGraderParams(): Promise<Record<string, unknown>> {
   let hooks: any;

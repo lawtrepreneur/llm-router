@@ -9,6 +9,10 @@ import { invalidateConfigCache, loadConfig } from "../../src/router/config";
 import { getActiveTiers } from "../../src/router/protocol";
 import * as sessions from "../../src/router/sessions";
 import { buildDispatchHeader } from "../../src/router/dispatch-header";
+import { snapshotTree } from "../../src/verify/tree";
+// Session lifecycle tests must not launch this repository's real test suite as
+// a background baseline. Baseline I/O has separate store/wiring/adapter tests.
+vi.mock("../../src/verify/tree", () => ({ snapshotTree: vi.fn(async () => undefined) }));
 
 /**
  * Regression coverage for the child-session leak.
@@ -30,6 +34,7 @@ interface Harness {
   createdIDs: string[];
   createOptions: any[];
   graderIDs: string[];
+  graderPrompts: string[];
   aborted: string[];
   deleted: string[];
   getSession: ReturnType<typeof vi.fn>;
@@ -42,10 +47,12 @@ function makeHarness(opts: {
   parentID?: string;
   sessionGetRejects?: boolean;
   sessionGetError?: boolean;
+  onProducer?: () => Promise<void>;
 } = {}): Harness {
   const createdIDs: string[] = [];
   const createOptions: any[] = [];
   const graderIDs: string[] = [];
+  const graderPrompts: string[] = [];
   const aborted: string[] = [];
   const deleted: string[] = [];
   let counter = 0;
@@ -70,6 +77,7 @@ function makeHarness(opts: {
         const isGrader = request?.body?.system !== undefined;
         if (isGrader) {
           graderIDs.push(request?.path?.id);
+          graderPrompts.push(request.body.parts[0].text);
           if (opts.graderPromptRejects) {
             throw new Error("grader transport failure");
           }
@@ -91,6 +99,7 @@ function makeHarness(opts: {
         if (opts.producerPromptRejects) {
           throw new Error("producer transport failure");
         }
+        await opts.onProducer?.();
         return { data: { parts: [{ type: "text", text: "producer output" }] } };
       },
       abort: async (options: any) => {
@@ -113,7 +122,7 @@ function makeHarness(opts: {
     client: client as any,
   };
 
-  return { ctx, createdIDs, createOptions, graderIDs, aborted, deleted, getSession };
+  return { ctx, createdIDs, createOptions, graderIDs, graderPrompts, aborted, deleted, getSession };
 }
 
 async function runDelegate(
@@ -137,6 +146,7 @@ describe("child session lifecycle", () => {
   let savedUserProfile: string | undefined;
 
   beforeEach(() => {
+    vi.mocked(snapshotTree).mockResolvedValue(undefined);
     const dir = join(tmpdir(), `oc-mr-session-lifecycle-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
     savedHome = process.env.HOME;
@@ -155,6 +165,31 @@ describe("child session lifecycle", () => {
     else process.env.USERPROFILE = savedUserProfile;
     delete process.env.MODEL_ROUTER_VERIFIED_DELEGATE;
     invalidateConfigCache();
+  });
+
+  it.each(["task", "delegate"])("%s grader receives the dispatch-time delta, not the dirty tree", async mode => {
+    const cfg = loadConfig();
+    cfg.enforcement ??= {}; cfg.enforcement.verify ??= {};
+    cfg.enforcement.verify.testBaseline = false;
+    const old = join(process.cwd(), "predating.ts");
+    const added = join(process.cwd(), "producer.ts");
+    const before = { cwd: process.cwd(), head: "head", fingerprint: "before", dirty: true, files: [{ path: old, status: " M" }] };
+    vi.mocked(snapshotTree).mockResolvedValue(before);
+    const after = { ...before, fingerprint: "after", files: [...before.files, { path: added, status: "??" }] };
+    const h = makeHarness({ onProducer: async () => { vi.mocked(snapshotTree).mockResolvedValue(after); } });
+    if (mode === "delegate") await runDelegate(h);
+    else {
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const input = { tool: "task", sessionID: ORCHESTRATOR_SID, callID: "baseline-task" };
+      const args = { subagent_type: "fast", prompt: "Investigate.\n[acceptance]\ncriteria: investigation complete\n[/acceptance]" };
+      await hooks["tool.execute.before"]!(input, { args });
+      vi.mocked(snapshotTree).mockResolvedValue(after);
+      await hooks["tool.execute.after"]!({ ...input, args }, { title: "task", output: "findings", metadata: { sessionId: "child" } });
+    }
+    expect(h.graderPrompts).toHaveLength(1);
+    expect(h.graderPrompts[0]).toContain("Producer delta only");
+    expect(h.graderPrompts[0]).toContain(added);
+    expect(h.graderPrompts[0]).not.toContain(old);
   });
 
   describe("task false-refusal detection", () => {
@@ -186,6 +221,40 @@ describe("child session lifecycle", () => {
   });
 
   describe("task dispatch headers", () => {
+    it.each([
+      { prompt: "Do the work", cap: 11 },
+      { prompt: "CAP:7\nDo the work", cap: 7 },
+      { prompt: "CAP:none\nreason: inspect related modules\nDo the work", cap: "none" },
+      { prompt: "CAP:none\nDo the work", cap: 11 },
+      { prompt: "Do the work\nCAP:7\nReturn results", cap: 7 },
+      { prompt: "Do the work\nCAP:none\nreason: inspect related modules\nReturn results", cap: "none" },
+      { prompt: "Read-only budget: uncapped for this dispatch", cap: 11 },
+    ] as const)("announces the registered budget for $prompt", async ({ prompt, cap }) => {
+      const cfg = loadConfig();
+      cfg.tierCaps = { ...cfg.tierCaps, fast: 11 };
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: "fast", prompt: String(prompt) } };
+      await hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      const header = output.args.prompt.split("\n\n---\n\n")[0]!;
+      const announcement = cap === "none" ? "uncapped for this dispatch" : `${cap} calls`;
+      expect(header).toContain(`Read-only budget: ${announcement}.`);
+      expect(output.args.prompt).toBe(buildDispatchHeader({ tier: "fast", cap, projectDirectory: process.cwd() }) + "\n\n---\n\n" + prompt);
+
+      // Pin equality against registration, not just the header builder. Also
+      // register the emitted prompt: instructional examples must not change caps.
+      for (const text of [prompt, output.args.prompt]) {
+        const store = sessions.createSessionStore();
+        expect(store.registerFromChatMessage(
+          { agent: "fast", sessionID: "budget-child" },
+          { parts: [{ type: "text", text }] }, cfg, Object.keys(getActiveTiers(cfg)),
+        ).registered).toBe(true);
+        const result = { output: "contents" };
+        store.recordToolCall({ sessionID: "budget-child", tool: "read", args: { filePath: "file.ts" } }, result);
+        const announced = header.match(/Read-only budget: (\d+) calls\./)?.[1] ?? "∞";
+        expect(result.output).toContain(`[cap: 1/${announced}]`);
+      }
+    });
+
     it.each(["subagent_type", "subagentType"])("prepends using %s and is idempotent", async (field) => {
       const cfg = loadConfig();
       cfg.tierCaps = { ...cfg.tierCaps, fast: 11 };

@@ -28,6 +28,7 @@ import { resolveBaseDir } from "./paths";
 
 /** The concrete, inspectable result of a delegation (artefact contract §3.3). */
 export interface Artefact {
+  changeBaseline?: "available" | "unavailable";
   changedFiles: { path: string; status: string }[];
   finalReturnText: string;
   declaredOutputs: string[];
@@ -95,6 +96,7 @@ function view(artefact: Artefact): ArtefactView {
   return {
     finalReturnText: artefact.finalReturnText,
     changedFiles: artefact.changedFiles,
+    changeBaseline: artefact.changeBaseline,
     declaredOutputs: artefact.declaredOutputs,
   };
 }

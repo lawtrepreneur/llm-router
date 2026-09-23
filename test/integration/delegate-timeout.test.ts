@@ -20,6 +20,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import ModelRouterPlugin from "../../src/index";
 import { invalidateConfigCache } from "../../src/router/config";
+// These tests isolate model/gate clocks. The temp directories are not Git
+// checkouts; model the unavailable snapshot without introducing real processes
+// into a fake-timer test (which would make grader start times wall-clock dependent).
+vi.mock("../../src/verify/tree", () => ({ snapshotTree: async () => undefined }));
 import {
   DEFAULT_DELEGATE_PROMPT_TIMEOUT_MS,
   DEFAULT_GATE_BUDGET_MS,

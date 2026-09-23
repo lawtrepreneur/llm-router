@@ -128,6 +128,10 @@ export interface EnforcementConfig {
     delegateTimeoutMs?: number;
     /** Reject unavailable verification. Default false; never escalates it. */
     strictUnverifiable?: boolean;
+    /** Capture/cache conservative dispatch-time test baselines. Default true. */
+    testBaseline?: boolean;
+    /** Independent capture ceiling, including fingerprinting. Default 60000 ms. */
+    baselineTimeoutMs?: number;
     /** Override tier ceilings: fast 60000 / medium 180000 / heavy 600000 ms. */
     graderTimeoutMs?: number;
     /** Ceiling for the whole acceptance gate, in ms. Default 90000. */
@@ -682,6 +686,9 @@ function validateEnforcement(obj: Record<string, unknown>): void {
       enforcement.verify !== null
     ) {
       const verify = enforcement.verify as Record<string, unknown>;
+      if (verify.testBaseline !== undefined && typeof verify.testBaseline !== "boolean") {
+        throw new Error("tiers.json: enforcement.verify.testBaseline must be a boolean");
+      }
       if (verify.strictUnverifiable !== undefined && typeof verify.strictUnverifiable !== "boolean") {
         throw new Error("tiers.json: enforcement.verify.strictUnverifiable must be a boolean");
       }
@@ -722,6 +729,7 @@ function validateEnforcement(obj: Record<string, unknown>): void {
         "delegateTimeoutMs",
         "graderTimeoutMs",
         "gateBudgetMs",
+        "baselineTimeoutMs",
       ] as const) {
         const value = verify[key];
         if (value !== undefined) {

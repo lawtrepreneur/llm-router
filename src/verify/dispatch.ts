@@ -1,7 +1,8 @@
 /**
- * src/verify/dispatch.ts — PURE helpers shared by both Layer-2 wirings
+ * src/verify/dispatch.ts — shared helpers and TTL-managed dispatch state
  * (Option (i) verify-dispatch around the built-in `task` tool, and Option (ii)
- * the plugin-owned `delegate` tool). No fs/network/SDK here; the live adapters
+ * the plugin-owned `delegate` tool). No fs/network/SDK here; bounded background
+ * work uses the shared timeout primitive, and the live adapters
  * (exec/fs/grader) are built in index.ts from PluginInput and injected.
  */
 import type { RouterConfig } from "../router/config";
@@ -9,6 +10,29 @@ import { getActiveTiers } from "../router/protocol";
 import { parseDoDFromDispatch, inferDoD } from "./dod";
 import type { DoD, InferHints } from "./dod";
 import { DEFAULT_IDLE_TTL_MS } from "../router/idle-sweep";
+import { resolve } from "node:path";
+import type { ExecResult } from "./types";
+import { observeTests, type TestBaseline } from "./baseline";
+import { withTimeout } from "./timeout";
+
+export interface TreeSnapshot {
+  cwd: string;
+  head: string;
+  fingerprint: string;
+  dirty: boolean;
+  files: ChangedFile[];
+}
+
+export interface BaselineCaptureDeps {
+  snapshot(cwd: string, signal: AbortSignal): Promise<TreeSnapshot | undefined>;
+  run(command: string, cwd: string, signal: AbortSignal): Promise<ExecResult>;
+  timeoutMs: number;
+}
+
+function pathKey(path: string): string {
+  const normalized = resolve(path).replace(/\\/g, "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
 
 export interface ChangedFileStoreOptions {
   /** Injectable clock (tests). Defaults to Date.now. */
@@ -16,7 +40,10 @@ export interface ChangedFileStoreOptions {
 }
 
 /** Tools that mutate the workspace (mirrors the guard taxonomy). */
-const WRITE_TOOLS = new Set(["write", "edit", "patch", "multiedit"]);
+const WRITE_TOOLS = new Set(["write", "edit", "patch", "multiedit", "apply_patch"]);
+// Shell commands can edit too. Without a command-level proof of read-onlyness,
+// discarding a capture is safer than allowing an unobserved shell edit to seed it.
+const MAY_WRITE_TOOLS = new Set([...WRITE_TOOLS, "bash", "shell", "powershell", "exec"]);
 
 export interface ChangedFile {
   path: string;
@@ -49,6 +76,25 @@ export function createChangedFileStore(options: ChangedFileStoreOptions = {}) {
   const now = options.now ?? Date.now;
   const bySession = new Map<string, Map<string, string>>();
   const lastTouch = new Map<string, number>();
+  const dispatches = new Map<string, {
+    cwd: string; pending: boolean; contaminated: boolean;
+    snapshot?: TreeSnapshot;
+    ready: Promise<void>;
+    baselines: Map<string, Promise<TestBaseline | undefined>>;
+  }>();
+  const cache = new Map<string, {
+    cwd: string; pending: boolean; contaminated: boolean; stamp: number;
+    controller: AbortController; result: Promise<TestBaseline | undefined>;
+  }>();
+
+  function observeEdit(tool: string, cwd?: string): void {
+    if (!MAY_WRITE_TOOLS.has(tool.toLowerCase())) return;
+    // Unknown directory is conservatively treated as overlapping every capture.
+    const overlaps = (other: string) => !cwd || pathKey(cwd) === pathKey(other)
+      || pathKey(cwd).startsWith(pathKey(other) + "/") || pathKey(other).startsWith(pathKey(cwd) + "/");
+    for (const d of dispatches.values()) if (d.pending && overlaps(d.cwd)) d.contaminated = true;
+    for (const c of cache.values()) if (c.pending && overlaps(c.cwd)) c.contaminated = true;
+  }
 
   function touch(sessionID: string): void {
     lastTouch.set(sessionID, now());
@@ -57,11 +103,91 @@ export function createChangedFileStore(options: ChangedFileStoreOptions = {}) {
   function evict(sessionID: string): void {
     bySession.delete(sessionID);
     lastTouch.delete(sessionID);
+    dispatches.delete(sessionID);
   }
 
   return {
+    /** Non-blocking: fingerprint and test run are bounded background work. */
+    beginDispatch(id: string, cwd: string, commands: string[], deps: BaselineCaptureDeps): void {
+      touch(id);
+      bySession.delete(id);
+      const controller = new AbortController();
+      const d = {
+        cwd, pending: true, contaminated: false, snapshot: undefined as TreeSnapshot | undefined,
+        ready: Promise.resolve(), baselines: new Map<string, Promise<TestBaseline | undefined>>(),
+      };
+      dispatches.set(id, d);
+      d.ready = withTimeout(deps.snapshot(cwd, controller.signal), deps.timeoutMs, "dispatch fingerprint")
+        .then(snapshot => {
+          if (!snapshot || d.contaminated || dispatches.get(id) !== d) return;
+          d.snapshot = snapshot;
+          for (const command of new Set(commands)) {
+            const key = JSON.stringify([pathKey(snapshot.cwd), snapshot.head, snapshot.fingerprint, command]);
+            let entry = cache.get(key);
+            if (!entry) {
+              const capture = {
+                cwd, pending: true, contaminated: false, stamp: now(),
+                controller: new AbortController(), result: Promise.resolve<TestBaseline | undefined>(undefined),
+              };
+              cache.set(key, capture);
+              capture.result = withTimeout((async () => {
+                const result = await deps.run(command, cwd, capture.controller.signal);
+                if (result.timedOut || capture.contaminated) return undefined;
+                const end = await deps.snapshot(cwd, capture.controller.signal);
+                if (!end || capture.contaminated || end.head !== snapshot.head || end.fingerprint !== snapshot.fingerprint) return undefined;
+                return { observation: observeTests(result), dirty: snapshot.dirty };
+              })(), deps.timeoutMs, "test baseline")
+                .catch(() => undefined)
+                .then(result => {
+                  capture.pending = false;
+                  capture.controller.abort();
+                  if (!result && cache.get(key) === capture) cache.delete(key);
+                  return result;
+                });
+              entry = capture;
+            }
+            entry.stamp = now();
+            d.baselines.set(command, entry.result);
+          }
+        })
+        .catch(() => { /* Fingerprinting unavailable: retain explicit missing-snapshot state. */ })
+        .finally(() => { d.pending = false; controller.abort(); });
+    },
+    observeEdit,
+    async baseline(id: string, command: string, currentHead?: string): Promise<TestBaseline | undefined> {
+      const d = dispatches.get(id);
+      if (!d) return undefined;
+      touch(id);
+      await d.ready;
+      if (!currentHead || d.snapshot?.head !== currentHead) return undefined;
+      return d.baselines.get(command);
+    },
+    delta(id: string, childID: string, current?: TreeSnapshot, fallbackCwd?: string): { changedFiles: ChangedFile[]; changeBaseline: "available" | "unavailable" } {
+      const d = dispatches.get(id);
+      const snapshot = d?.snapshot;
+      const files = new Map<string, ChangedFile>();
+      for (const [path, status] of bySession.get(childID) ?? []) {
+        const base = d?.cwd ?? current?.cwd ?? fallbackCwd;
+        const absolute = base ? resolve(base, path) : path;
+        files.set(base ? pathKey(absolute) : path, { path: absolute, status });
+      }
+      const available = !!snapshot && !!current;
+      if (available) {
+        const before = new Set(snapshot.files.map(f => pathKey(f.path)));
+        for (const file of current.files) if (!before.has(pathKey(file.path))) files.set(pathKey(file.path), file);
+      }
+      return { changedFiles: [...files.values()], changeBaseline: available ? "available" : "unavailable" };
+    },
     record(sessionID: string, tool: string, args: unknown): void {
       touch(sessionID);
+      observeEdit(tool, dispatches.get(sessionID)?.cwd);
+      if (tool.toLowerCase() === "apply_patch") {
+        const a = args && typeof args === "object" ? args as Record<string, unknown> : {};
+        const patch = typeof a.patchText === "string" ? a.patchText : typeof a.patch === "string" ? a.patch : "";
+        const files = bySession.get(sessionID) ?? new Map<string, string>();
+        for (const match of patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)) files.set(match[1].trim(), "modified");
+        bySession.set(sessionID, files);
+      }
       const cf = extractChangedFile(tool, args);
       if (!cf) return;
       let m = bySession.get(sessionID);
@@ -85,6 +211,12 @@ export function createChangedFileStore(options: ChangedFileStoreOptions = {}) {
     sweep(nowMs: number = now(), ttlMs: number = DEFAULT_IDLE_TTL_MS): void {
       for (const [sessionID, stamp] of [...lastTouch.entries()]) {
         if (nowMs - stamp >= ttlMs) evict(sessionID);
+      }
+      for (const [key, entry] of cache) {
+        if (nowMs - entry.stamp >= ttlMs) {
+          entry.controller.abort();
+          cache.delete(key);
+        }
       }
     },
   };
@@ -199,8 +331,8 @@ export function buildForcingNote(
 }
 
 /** Suffix appended to an accepted delegate-tool result. */
-export function buildAcceptedSuffix(method: string, caveats: string[] = []): string {
+export function buildAcceptedSuffix(method: string, caveats: string[] = [], notes: string[] = []): string {
   return `\n\n[router \u2713 accepted: ${method}]` + (caveats.length
     ? `\nVerification caveats — NOT verified (acceptance is not a passing check):\n${caveats.map(r => `- ${r}`).join("\n")}`
-    : "");
+    : "") + (notes.length ? `\nVerification notes:\n${notes.map(r => `- ${r}`).join("\n")}` : "");
 }

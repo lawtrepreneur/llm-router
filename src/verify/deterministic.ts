@@ -8,6 +8,7 @@ import type { Verdict, DeterministicDeps, MutexRegistry, ExecResult } from "./ty
 import { scrubText } from "../guard/scrub";
 import { resolveAgainst } from "./paths";
 import { isAbsolute } from "node:path";
+import { compareTests, observeTests } from "./baseline";
 
 // ---------------------------------------------------------------------------
 // MutexRegistry — per-key serialization via promise-chaining
@@ -105,6 +106,7 @@ export function shapeMismatch(
 
 interface CheckResult {
   ok: boolean;
+  note?: string;
   unverifiable?: boolean;
   reason?: string;
   evidence?: string;
@@ -168,7 +170,7 @@ async function runRun(
   }
 }
 
-function resolveRepoCommand(
+export function resolveRepoCommand(
   check: Check,
   kind: "testsPass" | "buildPasses" | "lintClean",
   defaults: DeterministicDeps["defaults"],
@@ -211,10 +213,16 @@ async function runCommandCheck(
       if (!isCommandAllowed(command, allowlist)) {
         return { ok: false, unverifiable: true, reason: `command not allowlisted: ${command}` };
       }
+      const baseline = kind === "testsPass" ? await deps.testBaseline?.(command) : undefined;
       const r: ExecResult = await deps.exec(command, { cwd: deps.cwd, timeoutMs });
       if (r.timedOut) {
+        if (kind === "testsPass") {
+          const observed = compareTests(observeTests(r));
+          return { ...observed, reason: `${kind} timed out after ${timeoutMs}ms: ${command}; ${observed.reason}` };
+        }
         return { ok: false, reason: `${kind} timed out after ${timeoutMs}ms: ${command}` };
       }
+      if (kind === "testsPass") return compareTests(observeTests(r), baseline);
       const out = r.stdout + "\n" + r.stderr;
       const ok = r.code === 0;
       if (!ok) {
@@ -226,7 +234,7 @@ async function runCommandCheck(
       }
       return { ok: true, evidence: `exit 0: ${command}` };
     } catch (err) {
-      return { ok: false, reason: `${kind} check errored: ${scrubText(String(err))}` };
+      return { ok: false, ...(kind === "testsPass" ? { unverifiable: true } : {}), reason: `${kind} check errored: ${scrubText(String(err))}` };
     }
   };
 
@@ -335,6 +343,7 @@ export async function runDeterministic(dod: DoD, deps: DeterministicDeps): Promi
   const allPass = results.every(r => r.ok);
   const failed = results.some(r => !r.ok && !r.unverifiable);
   const caveats = results.filter(r => r.unverifiable).map(r => scrubText(r.reason ?? "check unavailable"));
+  const notes = results.flatMap(r => r.note ? [scrubText(r.note)] : []);
 
   const reasons: string[] = allPass
     ? [`all ${checks.length} deterministic checks passed`]
@@ -350,6 +359,7 @@ export async function runDeterministic(dod: DoD, deps: DeterministicDeps): Promi
     pass: allPass,
     outcome: failed ? "fail" : allPass ? "pass" : "unverifiable",
     ...(caveats.length ? { caveats } : {}),
+    ...(notes.length ? { notes } : {}),
     method: "deterministic",
     reasons,
     ...(evidence !== undefined ? { evidence } : {}),

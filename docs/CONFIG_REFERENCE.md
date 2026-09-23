@@ -159,6 +159,8 @@ may contain instruction text or paths.
 | `graderTimeoutMs` | `integer ≥ 1` | tier-dependent | Explicit override wins over grader-tier defaults: fast `60000`, medium `180000`, heavy/custom `600000` ms, defined in `GRADER_TIMEOUT_MS_BY_TIER` in `src/verify/timeout.ts`. Timeout produces `unverifiable`; the grader is aborted and deleted. |
 | `gateBudgetMs` | `integer ≥ 1` | `90000` (90 s) | Separate whole-gate ceiling for one delegate attempt. Expiry aborts that invocation's graders and produces `unverifiable`, not producer failure. Raise this too if a medium/heavy grader should use its full tier timeout. |
 | `strictUnverifiable` | `boolean` | `false` | Restores the former fail-closed rejection for unavailable verification. It does not buy producer retries or tier escalations. |
+| `testBaseline` | `boolean` | `true` | Capture conservative test baselines in the live working directory at dispatch, asynchronously. Set `false` to disable capture **and consumption**; `testsPass` then reports `unverifiable`, not a producer failure. Does not disable changed-file snapshots for grading. |
+| `baselineTimeoutMs` | `integer ≥ 1` | `60000` (60 s) | Independent ceiling for each dispatch fingerprint and baseline capture (test run plus closing fingerprint). Expiry discards the baseline and aborts its process. Neither is awaited before producer dispatch. |
 
 Verification has three outcomes: `pass` means checks ran successfully, `fail` means
 the work did not satisfy a performed check, and `unverifiable` carries the reason
@@ -166,7 +168,56 @@ a check could not be performed. The gate accepts when there is no genuine failur
 appending a **Verification caveats — NOT verified** list for every unavailable check;
 acceptance does not turn those checks into passes. Mixed failure/unavailable results
 still reject and may escalate. Strict mode rejects unavailable-only results without
-escalation. Command exit failures remain genuine failures (no test-baseline exemption).
+escalation. `run`, build and lint exit failures remain genuine failures. `testsPass`
+compares against a measured dispatch-time baseline instead of blaming the producer
+for every non-zero exit.
+
+### Test and changed-file baselines
+
+Both native `task` and plugin `delegate` start capture before producer execution.
+Read-only dispatches also warm the default test-command cache. Explicit `testsPass`
+commands use their own cache entries and the same command allowlist as verification.
+No repository is copied and tests run only in the live directory; suites can still
+have external side effects (ports, databases, services). Disable `testBaseline` for
+projects where background execution is inappropriate.
+
+The existing changed-file store owns a **per-plugin-instance, in-memory** cache,
+evicted by the same idle-TTL sweep as session state. Its key is canonical working
+directory, Git HEAD, SHA-256 of porcelain status plus binary working/index diffs
+and untracked file contents, and the exact test command. Dirty starting trees are
+allowed, explicitly recorded and compared only to the same fingerprint. A changed
+HEAD or uncommitted diff cannot reuse that entry. Delegate retries retain the
+original dispatch reference, so a failed attempt cannot become its own baseline.
+
+Capture is discarded if its closing fingerprint differs, an editing tool is
+observed for that directory during capture, execution times out, or fingerprinting
+is unavailable. An edit with unknown directory conservatively invalidates all
+in-flight captures. Edits are observed before and after tools, including patches.
+Shell/exec tools conservatively count as possible edits during capture, even when
+their command ultimately only reads; they are not added to the child's edit log.
+Submodule repositories are conservatively unavailable; ignored files and external
+environment changes are not fingerprinted. External edit-and-revert cycles between
+fingerprints are not observable unless editing-tool hooks report them.
+
+`testsPass` records exit code, opportunistic failing identities and test counts.
+Complete identity sets are compared by difference; only newly failing identities
+are named in a rejection. A formerly green suite becoming non-zero, or an increased
+failure count, rejects and can escalate. Equal non-zero exits or counts without
+complete identities cannot prove that failures are unchanged: they produce
+`unverifiable`, with the observed identities/count/exit for human judgment. Unknown
+runner output never throws. Missing, disabled, timed-out or contaminated baselines
+likewise produce `unverifiable` (accepted with a caveat unless strict mode is enabled).
+An accepted comparison against a pre-broken baseline means **“no worse than before,”
+not “the suite is green”**; the returned result includes that explicit verification note.
+
+For the LLM grader, the dispatch snapshot is a changed-path set. Grader input is
+the child's editing-tool paths union paths newly present in the current changed
+set, not the raw dirty tree. The prompt identifies other dirty files as predating
+dispatch and permits empty deltas for read-only tasks. Missing snapshots/current
+Git state get an explicit disclaimer and only the child edit log. This path-set
+delta cannot detect shell edits to an already-dirty path; editing-tool records
+cover that case when available. Concurrent work can add paths too: this is not
+exclusive attribution in a shared tree.
 
 Refused commands, grader dispatch exceptions/timeouts, gate-budget exhaustion, and
 relative file/schema paths without a resolvable working directory are unavailable.
@@ -295,7 +346,8 @@ Evaluated by `resolveEnforcementMode` on every dispatch.
 | `verify.minGraderTier` must be a string or `null`. |
 | `verify.graderTemperature` must be a number ≥ 0. |
 | `verify.requireExplicitDoD` must be a boolean. |
-| `verify.delegateTimeoutMs`, `verify.graderTimeoutMs` and `verify.gateBudgetMs` must each be an integer ≥ 1 (milliseconds). `0` and negatives are rejected, not read as "no timeout". |
+| `verify.delegateTimeoutMs`, `verify.graderTimeoutMs`, `verify.gateBudgetMs` and `verify.baselineTimeoutMs` must each be an integer ≥ 1 (milliseconds). `0` and negatives are rejected, not read as "no timeout". |
+| `verify.testBaseline` must be a boolean. |
 | `proportional.trivialBypass` must be a boolean. |
 | A tier's `effort` (when present) must be one of `low \| medium \| high \| xhigh \| max`. Error: `tiers.json: preset '<preset>' tier '<tier>': effort must be one of low, medium, high, xhigh, max`. |
 

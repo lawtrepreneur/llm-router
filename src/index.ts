@@ -338,7 +338,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   // Layer-2's impure corner: exec, fs, and the opencode client, built once and
   // read back through getConfig so a reloaded cfg (from /preset, /budget or
   // /router enforce) applies to graded work too.
-  const { graderSessions, dispatchGrader, buildGateDeps, disposeChildSession } =
+  const { graderSessions, dispatchGrader, buildGateDeps, disposeChildSession, beginVerification, prepareVerification } =
     createVerificationWiring({
       client: ctx.client,
       directory: ctx.directory,
@@ -467,6 +467,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
           // here (not inside the try) so the finally below can dispose any that an
           // early return or a throw skipped — otherwise each retry leaks another.
           const producerSessions: string[] = [];
+          let baselineID: string | undefined;
           try {
             let activeCfg = cfg;
             try {
@@ -528,6 +529,12 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               const producerSid: string | undefined = created?.data?.id;
               if (!producerSid) return null;
               producerSessions.push(producerSid);
+              // Keep the ORIGINAL dispatch reference across retries/escalations:
+              // recapturing after a failed attempt would excuse its regression.
+              if (!baselineID) {
+                baselineID = producerSid;
+                beginVerification(changedFileStore, baselineID, args.cwd, dod);
+              }
               // Compose with Layer 1: guard the plugin-created producer session.
               try {
                 sessionStore.registerProducerSession(producerSid, tier, activeCfg);
@@ -573,8 +580,10 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                 producerText = "";
               }
 
+              const verification = await prepareVerification(changedFileStore, baselineID, producerSid, args.cwd);
               const artefact = {
-                changedFiles: changedFileStore.get(producerSid),
+                changedFiles: verification.changedFiles,
+                changeBaseline: verification.changeBaseline,
                 finalReturnText: producerText,
                 declaredOutputs: dod.deliverable ? [dod.deliverable] : [],
                 producerSessionID: producerSid,
@@ -589,6 +598,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               const gateGraderSessions = new Set<string>();
               const completedFailures: string[] = [];
               const gateDeps = buildGateDeps(toolCtx?.sessionID, gateGraderSessions);
+              gateDeps.deterministic.testBaseline = verification.testBaseline;
               gateDeps.deterministic.onFailure = reason => completedFailures.push(reason);
               let gateRes;
               try {
@@ -647,7 +657,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               }
 
               // Per-attempt cleanup (drop producer session tracking + state).
-              changedFileStore.clear(producerSid);
+              if (producerSid !== baselineID) changedFileStore.clear(producerSid);
               try {
                 sessionStore.unregister(producerSid);
                 sessionRootMemo.delete(producerSid);
@@ -701,7 +711,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   true,
                   gateRes.verdict.method,
                 );
-                return producerText + buildAcceptedSuffix(gateRes.verdict.method, gateRes.verdict.caveats);
+                return producerText + buildAcceptedSuffix(gateRes.verdict.method, gateRes.verdict.caveats, gateRes.verdict.notes);
               }
               if (action.action === "give_up") {
                 dumpDelegateScorecard(
@@ -730,6 +740,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
             // disposeChildSession is fail-soft, so re-disposing an already
             // disposed session is harmless.
             for (const sid of producerSessions) {
+              changedFileStore.clear(sid);
               await disposeChildSession(sid);
             }
           }
@@ -873,6 +884,21 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     // -----------------------------------------------------------------------
     "tool.execute.before": async (input: any, output: any) => {
       if (bypassed) return;
+      // Observe before execution too: an in-flight edit must contaminate a
+      // capture even if the test finishes before the edit's after-hook fires.
+      if (typeof input?.tool === "string") changedFileStore.observeEdit(input.tool,
+        typeof output?.args?.cwd === "string" ? output.args.cwd : undefined);
+      if (input?.tool === "task" && typeof input.callID === "string" && typeof input.sessionID === "string") {
+        const mode = resolveEnforcementMode({ config: cfg, env: process.env }).mode;
+        if (shouldVerifyTask("task", mode, cfg.enforcement?.verify?.require)) {
+          beginVerification(changedFileStore, `task:${input.sessionID}:${input.callID}`,
+            typeof output?.args?.cwd === "string" ? output.args.cwd : undefined,
+            buildDelegationDoD({
+              prompt: typeof output?.args?.prompt === "string" ? output.args.prompt : undefined,
+              description: typeof output?.args?.description === "string" ? output.args.description : undefined,
+            }));
+        }
+      }
       // Dispatch hygiene is independent of subagent guard enforcement below.
       // The plugin API declares generic args, not a task-specific argument shape.
       try {
@@ -888,7 +914,12 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               typeof args.prompt === "string" &&
               !args.prompt.startsWith("[router] You are @")
             ) {
-              const cap = cfg.tierCaps?.[tier] ?? DEFAULT_TIER_CAPS[tier] ?? 5;
+              // Resolve from the original dispatch, using the registration rules.
+              const parsed = parseCapDirective(args.prompt);
+              const override =
+                parsed === "none" && !/\breason:/i.test(args.prompt) ? null : parsed;
+              const baseline = cfg.tierCaps?.[tier] ?? DEFAULT_TIER_CAPS[tier] ?? 5;
+              const cap = override ?? baseline;
               const prompt = buildDispatchHeader({ tier, cap, projectDirectory: ctx.directory }) +
                 "\n\n---\n\n" + args.prompt;
               args.prompt = prompt;
@@ -1018,10 +1049,11 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               prompt: input?.args?.prompt,
               description: input?.args?.description,
             });
+            const dispatchID = `task:${input.sessionID}:${input.callID}`;
+            const verification = await prepareVerification(changedFileStore, dispatchID, childSessionID ?? "", input?.args?.cwd);
             const artefact = {
-              changedFiles: childSessionID
-                ? changedFileStore.get(childSessionID)
-                : [],
+              changedFiles: verification.changedFiles,
+              changeBaseline: verification.changeBaseline,
               finalReturnText,
               declaredOutputs: dod.deliverable ? [dod.deliverable] : [],
               producerSessionID: childSessionID ?? "",
@@ -1044,9 +1076,12 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               artefact.changedFiles.length === 0
             ) {
               if (childSessionID) changedFileStore.clear(childSessionID);
+              changedFileStore.clear(dispatchID);
               return;
             }
 
+            const gateDeps = buildGateDeps();
+            gateDeps.deterministic.testBaseline = verification.testBaseline;
             const res = await accept(
               {
                 dod,
@@ -1060,7 +1095,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   : {}),
               },
               artefact,
-              buildGateDeps(),
+              gateDeps,
             );
             if (!res.accepted && !res.verdict.skipped) {
               const ladder = cfg.enforcement?.escalate?.ladder ?? ["fast", "medium", "heavy"];
@@ -1072,10 +1107,11 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   ? output.output + "\n\n" + note
                   : note;
             }
-            if (res.accepted && res.verdict.caveats?.length) {
-              output.output += buildAcceptedSuffix(res.verdict.method, res.verdict.caveats);
+            if (res.accepted && (res.verdict.caveats?.length || res.verdict.notes?.length)) {
+              output.output += buildAcceptedSuffix(res.verdict.method, res.verdict.caveats, res.verdict.notes);
             }
             if (childSessionID) changedFileStore.clear(childSessionID);
+            changedFileStore.clear(dispatchID);
           } catch {
             // fail-closed: a verification error must NEVER throw out of the after-hook
           }
