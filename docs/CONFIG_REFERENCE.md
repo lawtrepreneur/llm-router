@@ -264,6 +264,59 @@ Detection is by model *family*, not by provider prefix: `isClaudeModel` matches 
 Warnings are emitted once per distinct problem (keyed by tier and, where it matters, by
 the offending value), because agent registration re-runs on every `config` hook.
 
+### Known issue: the provider matrix covers `effort` only
+
+The matrix above describes what happens to the **generic** `effort` field. The two
+explicit provider-specific fields are **not** gated by model family:
+`buildAgentOptions` emits `budget_tokens` whenever `thinking.budgetTokens` is truthy,
+and `reasoning_effort` / `reasoning_summary` whenever the matching `reasoning.*` field
+is set, without ever consulting `isClaudeModel` or `isOpenAIModel`
+(`src/router/agent-options.ts`). Only the `effort` branch checks the family.
+
+Two consequences, both reachable from a valid `tiers.json`:
+
+| Configuration | What is registered | Result |
+|---|---|---|
+| `thinking.budgetTokens` on a non-Anthropic tier | `options.budget_tokens` | Sent to a provider that has no such parameter. |
+| `reasoning.effort` / `reasoning.summary` on an Anthropic tier | `options.reasoning_effort` / `options.reasoning_summary` | Sent to a provider that has no such parameter. |
+
+The second one is the sharp edge, because of a **newer upstream constraint**. Anthropic's
+`claude-opus-5-5` has adaptive thinking always on and **rejects a manually supplied
+thinking budget with HTTP 400**; `{"type": "disabled"}` is rejected the same way. Effort
+on that model is expressed through `effort` / `output_config.effort`, never through a
+token budget. The bundled `anthropic` preset already points `@medium` at
+`anthropic/claude-opus-5-5`, so a tier written as:
+
+```jsonc
+{
+  "presets": {
+    "anthropic": {
+      "medium": {
+        "model": "anthropic/claude-opus-5-5",
+        "thinking": { "budgetTokens": 32000 }
+      }
+    }
+  }
+}
+```
+
+registers `budget_tokens` and every dispatch on that tier fails with a 400 — and,
+because `thinking.budgetTokens` outranks `effort` in the precedence list above, a tier
+that sets both silently loses the `effort` that *would* have worked.
+
+The same applies to any other Anthropic model whose catalogue entry carries
+`rejects_disabled_thinking`: today `claude-opus-5-5`, `claude-fable-5`,
+`claude-fable-5-1` and `claude-mythos-5-1`.
+
+**Guidance until this is gated:** on Anthropic tiers use `effort`, not
+`thinking.budgetTokens`. Reserve `thinking.budgetTokens` for older Anthropic models that
+still accept an explicit budget, and reserve `reasoning.*` for OpenAI tiers.
+
+A fix would gate both explicit branches by family, symmetrically with the `effort`
+branch, and warn rather than register when a tier names a field its provider cannot
+accept. That is a behaviour change to `buildAgentOptions`, so it moves golden snapshots
+for any preset that exercises it.
+
 ---
 
 ## Prompt styles (`promptStyle`)
