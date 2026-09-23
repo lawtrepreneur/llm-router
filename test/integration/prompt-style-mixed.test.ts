@@ -80,9 +80,9 @@ test("shipped hybrid preset mixes styles by model under auto", async () => {
     const agent = await registerAgents(dir);
 
     // No shipped preset sets promptStyle, so every tier resolves through auto.
-    expect(agent.fast?.model).toBe("anthropic/claude-haiku-4-5");
-    expect(agent.medium?.model).toBe("openai/gpt-5.6-terra-fast");
-    expect(agent.heavy?.model).toBe("anthropic/claude-opus-5");
+    expect(agent.fast?.model).toBe("openai/gpt-6-luna-fast");
+    expect(agent.medium?.model).toBe("openai/gpt-6-astra-fast");
+    expect(agent.heavy?.model).toBe("anthropic/claude-fable-5-1");
 
     // Weak models keep the enumerated prompts.
     expect(agent.fast?.prompt).toContain(PRESCRIPTIVE_MARKER);
@@ -90,7 +90,7 @@ test("shipped hybrid preset mixes styles by model under auto", async () => {
     expect(agent.medium?.prompt).toContain(PRESCRIPTIVE_MARKER);
     expect(agent.medium?.prompt).not.toContain(GOAL_MARKER);
 
-    // opus-4-8 is a strong model: goal-oriented.
+    // claude-fable-5-1 matches the claude-fable-5 strong pattern: goal-oriented.
     expect(agent.heavy?.prompt).toContain(GOAL_MARKER);
     expect(agent.heavy?.prompt).not.toContain(PRESCRIPTIVE_MARKER);
     expect(agent.heavy?.prompt).toContain("SCOPE GROWTH:");
@@ -103,7 +103,7 @@ test("fable-effort preset resolves every tier to goal-oriented under auto", asyn
     const agent = await registerAgents(dir);
 
     for (const name of ["fast", "medium", "heavy"] as const) {
-      expect(agent[name]?.model).toBe("anthropic/claude-fable-5");
+      expect(agent[name]?.model).toBe("anthropic/claude-fable-5-1");
       expect(agent[name]?.prompt).toContain(GOAL_MARKER);
       expect(agent[name]?.prompt).not.toContain(PRESCRIPTIVE_MARKER);
       expect(agent[name]?.prompt).toContain(GOAL_ORIENTED_TIER_PROMPTS[name]);

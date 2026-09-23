@@ -58,11 +58,11 @@
         ]
       },
       "medium": {
-        "model": "anthropic/claude-opus-5",
+        "model": "anthropic/claude-opus-5-5",
         "variant": "high",
         "effort": "high",
         "costRatio": 5,
-        "description": "Opus 5 high for implementation, refactoring, and tests",
+        "description": "Opus 5.5 high for implementation, refactoring, and tests",
         "steps": 50,
         "whenToUse": [
           "Feature implementation",
@@ -88,9 +88,9 @@
     },
     "openai": {
       "fast": {
-        "model": "openai/gpt-5.6-luna-fast",
+        "model": "openai/gpt-6-luna-fast",
         "costRatio": 1,
-        "description": "GPT-5.6 Luna Fast for fast exploration and simple tasks",
+        "description": "GPT-6 Luna Fast for fast exploration and simple tasks",
         "steps": 30,
         "whenToUse": [
           "Codebase exploration and search",
@@ -246,10 +246,10 @@
     },
     "hybrid": {
       "fast": {
-        "model": "openai/gpt-5.6-luna-fast",
+        "model": "openai/gpt-6-luna-fast",
         "variant": "low",
         "costRatio": 1,
-        "description": "GPT 5.6 Luna (low) for exploration, search, and simple reads",
+        "description": "GPT 6 Luna (low) for exploration, search, and simple reads",
         "steps": 30,
         "whenToUse": [
           "Codebase exploration and search",

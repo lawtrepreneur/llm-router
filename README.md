@@ -14,7 +14,7 @@ Most AI coding tools give you one model for everything. You pay Opus prices to r
 The orchestrator runs on *every* message. Put Sonnet there, not Opus. Sonnet reads a routing protocol and delegates just as well as Opus — at 4x lower cost. Reserve Opus for when it genuinely matters.
 
 **Inject a compressed, LLM-optimized routing protocol.**
-Instead of duplicated prose, the plugin injects a dense, machine-readable routing protocol. The protocol itself is 3,116 characters; a Claude orchestrator receives 3,888 characters after its authority prefix (roughly 965–1,075 tokens at 3.6–4.0 characters per token). Every message, every session.
+Instead of duplicated prose, the plugin injects a dense, machine-readable routing protocol. The protocol itself is 3,120 characters; a Claude orchestrator receives 3,892 characters after its authority prefix (roughly 965–1,075 tokens at 3.6–4.0 characters per token). Every message, every session.
 
 **Match task to tier using a configurable taxonomy.**
 A keyword routing guide (`@fast→search/grep/read`, `@medium→impl/refactor/test`, `@heavy→arch/debug/security`) tells the orchestrator exactly which tier fits each task type. Fully customizable. No ambiguity.
@@ -67,7 +67,7 @@ opencode-model-router injects a **delegation protocol** into the system prompt t
 4. **Never over-qualify** — use the cheapest tier that can reliably handle the task
 5. **Fallback** across providers when one fails
 
-All of this adds 3,116 characters for a non-Claude orchestrator or 3,888 characters for a Claude orchestrator (roughly 770–1,075 tokens at 3.6–4.0 characters per token).
+All of this adds 3,120 characters for a non-Claude orchestrator or 3,892 characters for a Claude orchestrator (roughly 770–1,075 tokens at 3.6–4.0 characters per token).
 
 ## Understanding how it works
 
@@ -168,7 +168,7 @@ Task distribution: 18 exploration (60%), 10 implementation (33%), 2 architecture
 
 ## How it works
 
-On every message, the plugin injects a 3,116-character routing protocol. A Claude orchestrator receives 3,888 characters after its authority prefix (roughly 965–1,075 tokens at 3.6–4.0 characters per token). The notation is intentionally dense and compressed — it's **optimized for LLM comprehension, not human readability**. An agent reads it as a precise routing grammar; a human might squint at it.
+On every message, the plugin injects a 3,120-character routing protocol. A Claude orchestrator receives 3,892 characters after its authority prefix (roughly 965–1,075 tokens at 3.6–4.0 characters per token). The notation is intentionally dense and compressed — it's **optimized for LLM comprehension, not human readability**. An agent reads it as a precise routing grammar; a human might squint at it.
 
 What the orchestrator sees (Anthropic preset, normal mode):
 
@@ -995,7 +995,7 @@ After `/annotate-plan`:
 
 ## Token overhead
 
-Measured with the bundled Anthropic preset in normal mode (the shipped `activePreset`/`activeMode` defaults), the routing protocol is 3,116 characters for a non-Claude orchestrator. A Claude orchestrator receives 3,888 characters after its authority prefix, or 4,686 characters when the 798-character DoD/enforcement section is enabled. That is roughly 770–1,295 tokens across the three paths at 3.6–4.0 characters per token. The optional anti-narration clause adds another 650 characters to the Claude path.
+Measured with the bundled Anthropic preset in normal mode (the shipped `activePreset`/`activeMode` defaults), the routing protocol is 3,120 characters for a non-Claude orchestrator. A Claude orchestrator receives 3,892 characters after its authority prefix, or 4,690 characters when the 798-character DoD/enforcement section is enabled. That is roughly 770–1,295 tokens across the three paths at 3.6–4.0 characters per token. The optional anti-narration clause adds another 650 characters to the Claude path.
 
 These are character counts of the prompts the shipped config actually produces, so they move whenever the protocol text does. `test/unit/docs-drift.test.ts` recomputes all three from `tiers.json` on every run and fails unless this section still quotes them, so a change that grows the protocol cannot land without updating these numbers.
 
