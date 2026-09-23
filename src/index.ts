@@ -12,7 +12,7 @@ import {
 } from "./router/config";
 import type { RouterConfig, TierConfig, Preset, ModeConfig } from "./router/config";
 import { buildAgentOptions, warnAgentOptionsEffortOnce } from "./router/agent-options";
-import { selectTierPrompt } from "./router/prompts";
+import { selectTierPrompt, TOOL_AUTHORITY_CLAUSE } from "./router/prompts";
 import {
   buildTiersOutput,
   buildPresetList,
@@ -1114,10 +1114,22 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
             ? `${CLAUDE_TIER_PREFIX[name]}\n\n${CLAUDE_ANTI_NARRATION}`
             : CLAUDE_TIER_PREFIX[name]
           : undefined;
-        const finalPrompt =
+        const styledPrompt =
           claudePrefix && resolvedPrompt
             ? `${claudePrefix}\n\n---\n\n${resolvedPrompt}`
             : resolvedPrompt;
+
+        // The tool-authority clause is appended HERE rather than inside each
+        // tier prompt, for three reasons: one copy instead of six; the
+        // style-comparison contracts in test/unit/prompt-style.test.ts compare
+        // goal-oriented against prescriptive length, and adding the same
+        // constant to both sides erodes a ratio it is meant to protect; and a
+        // user-supplied `tier.prompt` bypasses the shipped defaults entirely,
+        // so a clause living in the defaults would not protect the tiers most
+        // likely to be hand-written.
+        const finalPrompt = styledPrompt
+          ? `${styledPrompt}\n\n${TOOL_AUTHORITY_CLAUSE}`
+          : TOOL_AUTHORITY_CLAUSE;
 
         const agentDef: Record<string, unknown> = {
           model: tier.model,
