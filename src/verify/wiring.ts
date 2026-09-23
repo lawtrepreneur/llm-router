@@ -1,7 +1,7 @@
 /**
  * The impure corner of Layer 2.
  *
- * Everything else under src/verify/ is pure: the gate, the DoD schema, the
+ * Together with tree.ts this owns verification I/O. The gate, the DoD schema, the
  * deterministic checks and the grader protocol all take their side effects as
  * injected deps. This module is where those deps are actually built out of a
  * child_process, a filesystem and an opencode client, so the impurity lives in
@@ -15,12 +15,14 @@
  */
 import { exec as nodeExec } from "node:child_process";
 import { access, readFile as fsReadFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
-import { createMutexRegistry } from "./deterministic";
-import { tierModel } from "./dispatch";
+import { isAbsolute, join, resolve } from "node:path";
+import { createMutexRegistry, DEFAULT_ALLOWLIST, isCommandAllowed, resolveRepoCommand } from "./deterministic";
+import { tierModel, type createChangedFileStore } from "./dispatch";
+import { snapshotTree } from "./tree";
+import type { DoD } from "./dod";
+import type { DeterministicDeps } from "./types";
 import {
-  DEFAULT_GRADER_PROMPT_TIMEOUT_MS,
-  timeoutMs,
+  graderTimeoutMs,
   withTimeout,
 } from "./timeout";
 import type { RouterConfig } from "../router/config";
@@ -61,6 +63,12 @@ export function extractAssistantText(res: any): string {
 }
 
 export interface VerificationWiring {
+  beginVerification(store: ReturnType<typeof createChangedFileStore>, id: string, cwd: string | undefined, dod: DoD): void;
+  prepareVerification(store: ReturnType<typeof createChangedFileStore>, id: string, childID: string, cwd?: string): Promise<{
+    changedFiles: { path: string; status: string }[];
+    changeBaseline: "available" | "unavailable";
+    testBaseline: NonNullable<DeterministicDeps["testBaseline"]>;
+  }>;
   /** Session ids currently running a grader prompt, so hooks can skip them. */
   graderSessions: Set<string>;
   /** Abort then delete a plugin-created child session. Never throws. */
@@ -97,7 +105,7 @@ export function createVerificationWiring(deps: {
 
   const execSeam = (
     command: string,
-    opts?: { cwd?: string; timeoutMs?: number },
+    opts?: { cwd?: string; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<ExecResult> =>
     new Promise((resolve) => {
       try {
@@ -108,6 +116,7 @@ export function createVerificationWiring(deps: {
             timeout: opts?.timeoutMs ?? 120000,
             maxBuffer: 10 * 1024 * 1024,
             windowsHide: true,
+            signal: opts?.signal,
           },
           (err: any, stdout: any, stderr: any) => {
             const timedOut = !!(err && err.killed && err.signal === "SIGTERM");
@@ -202,10 +211,9 @@ export function createVerificationWiring(deps: {
       // Time-boxed for the same reason as the producer prompt, but with a
       // sharper edge: a grader that never answers must not be able to hold the
       // gate open. The RouterTimeoutError is deliberately allowed to propagate
-      // to runChecker, whose fail-closed catch turns it into a non-passing
-      // verdict naming the timeout. Explicitly NOT modelled as "inconclusive",
-      // because an inconclusive grader that releases the gate is a fabricated
-      // pass wearing a hedge.
+      // to runChecker, which returns unverifiable with the timeout reason.
+      // The gate decides acceptance using strictUnverifiable; no producer
+      // escalation is warranted when the grader itself could not finish.
       //
       // No abort is issued here: the finally below already calls
       // disposeChildSession, which aborts before it deletes, so a second abort
@@ -222,10 +230,7 @@ export function createVerificationWiring(deps: {
             parts: [{ type: "text", text: req.prompt }],
           },
         }),
-        timeoutMs(
-          cfg.enforcement?.verify?.graderTimeoutMs,
-          DEFAULT_GRADER_PROMPT_TIMEOUT_MS,
-        ),
+        graderTimeoutMs(req.tier, cfg.enforcement?.verify?.graderTimeoutMs),
         "grader prompt",
       );
       return { sessionID: sid, text: extractAssistantText(res) };
@@ -255,10 +260,42 @@ export function createVerificationWiring(deps: {
         minGraderTier: cfg.enforcement?.verify?.minGraderTier ?? null,
       },
       require: cfg.enforcement?.verify?.require,
+      strictUnverifiable: cfg.enforcement?.verify?.strictUnverifiable,
     };
   };
 
   return {
+    beginVerification(store, id, cwd, dod) {
+      const verify = getConfig().enforcement?.verify;
+      const base = resolve(directory, cwd || ".");
+      const checks = dod.checks.filter(c => c.kind === "testsPass");
+      // Read-only dispatches warm the default-command cache for later producers.
+      const commands = (checks.length ? checks : [{ kind: "testsPass" as const }])
+        .map(c => resolveRepoCommand(c, "testsPass", undefined))
+        .filter(c => isCommandAllowed(c, DEFAULT_ALLOWLIST));
+      const budget = verify?.baselineTimeoutMs ?? 60000;
+      store.beginDispatch(id, base, verify?.testBaseline === false || verify?.require === "never" ? [] : commands, {
+        snapshot: snapshotTree,
+        run: (command, cwd, signal) => execSeam(command, { cwd, timeoutMs: budget, signal }),
+        timeoutMs: budget,
+      });
+    },
+    async prepareVerification(store, id, childID, cwd) {
+      const controller = new AbortController();
+      let current;
+      try {
+        current = await withTimeout(snapshotTree(resolve(directory, cwd || "."), controller.signal), 10000, "grade fingerprint");
+      } catch {
+        current = undefined; // Explicit unavailable disclaimer, never a raw tree.
+      } finally {
+        controller.abort();
+      }
+      return {
+        ...store.delta(id, childID, current, resolve(directory, cwd || ".")),
+        testBaseline: command => getConfig().enforcement?.verify?.testBaseline === false
+          ? Promise.resolve(undefined) : store.baseline(id, command, current?.head),
+      };
+    },
     graderSessions,
     disposeChildSession,
     dispatchGrader,

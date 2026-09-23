@@ -22,7 +22,7 @@ dispatching the right tier, not by you becoming the explorer.
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5/high(5x) @heavy=claude-fable-5/max(20x).
+Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 
@@ -49,12 +49,13 @@ Non-trivial delegations are independently verified before their result is accept
 check: testsPass
 check: buildPasses
 check: fileExists path=src/foo.ts
-check: run command="node -e ..." expect=OK
+check: run command="node verify.js" expect=OK
 criteria: <plain-language success condition>
 deliverable: <path or short description>
 [/acceptance]
 
 - check kinds: testsPass | buildPasses | lintClean | fileExists path=… | schemaMatch path=… schema=… | run command="…" expect=…
+- Command allowlist (first-token basename): npm, npx, pnpm, yarn, bun, node, tsc, tsx, vitest, jest, eslint, prettier. No shell chaining, redirection, substitution or newlines; interpreter inline-eval/print flags are forbidden. buildPasses probes a build script, then root tsconfig.json (npx tsc --noEmit). Unavailable checks produce acceptance caveats, not producer escalation; strictUnverifiable restores rejection.
 - If you omit the block, a minimal DoD is auto-inferred from the task type.
 - A failing DoD causes the result to be rejected and retried/escalated, not silently accepted."
 `;
@@ -81,7 +82,7 @@ dispatching the right tier, not by you becoming the explorer.
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5/high(5x) @heavy=claude-fable-5/max(20x).
+Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 
@@ -105,7 +106,7 @@ exports[`assembled-prompt golden > assembled-prompt-anthropic-model-openai > ass
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5/high(5x) @heavy=claude-fable-5/max(20x).
+Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 
@@ -129,7 +130,7 @@ exports[`assembled-prompt golden > assembled-prompt-anthropic-model-undefined > 
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5/high(5x) @heavy=claude-fable-5/max(20x).
+Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 
@@ -153,7 +154,7 @@ exports[`assembled-prompt golden > assembled-prompt-openai-enforcement-on > asse
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: openai. Tiers: @fast=gpt-5.6-luna-fast(1x) @medium=gpt-5.6-terra-fast/high(5x) @heavy=gpt-5.6-sol-fast/xhigh(20x).
+Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 
@@ -180,12 +181,13 @@ Non-trivial delegations are independently verified before their result is accept
 check: testsPass
 check: buildPasses
 check: fileExists path=src/foo.ts
-check: run command="node -e ..." expect=OK
+check: run command="node verify.js" expect=OK
 criteria: <plain-language success condition>
 deliverable: <path or short description>
 [/acceptance]
 
 - check kinds: testsPass | buildPasses | lintClean | fileExists path=… | schemaMatch path=… schema=… | run command="…" expect=…
+- Command allowlist (first-token basename): npm, npx, pnpm, yarn, bun, node, tsc, tsx, vitest, jest, eslint, prettier. No shell chaining, redirection, substitution or newlines; interpreter inline-eval/print flags are forbidden. buildPasses probes a build script, then root tsconfig.json (npx tsc --noEmit). Unavailable checks produce acceptance caveats, not producer escalation; strictUnverifiable restores rejection.
 - If you omit the block, a minimal DoD is auto-inferred from the task type.
 - A failing DoD causes the result to be rejected and retried/escalated, not silently accepted."
 `;
@@ -212,7 +214,7 @@ dispatching the right tier, not by you becoming the explorer.
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: openai. Tiers: @fast=gpt-5.6-luna-fast(1x) @medium=gpt-5.6-terra-fast/high(5x) @heavy=gpt-5.6-sol-fast/xhigh(20x).
+Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 
@@ -236,7 +238,7 @@ exports[`assembled-prompt golden > assembled-prompt-openai-model-openai > assemb
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: openai. Tiers: @fast=gpt-5.6-luna-fast(1x) @medium=gpt-5.6-terra-fast/high(5x) @heavy=gpt-5.6-sol-fast/xhigh(20x).
+Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 
@@ -260,7 +262,7 @@ exports[`assembled-prompt golden > assembled-prompt-openai-model-undefined > ass
 
 You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
 
-Preset: openai. Tiers: @fast=gpt-5.6-luna-fast(1x) @medium=gpt-5.6-terra-fast/high(5x) @heavy=gpt-5.6-sol-fast/xhigh(20x).
+Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
 If you ARE @heavy, handle heavy-tier work yourself: never self-call @heavy.
 

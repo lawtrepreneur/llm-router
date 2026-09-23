@@ -12,7 +12,10 @@ import {
 } from "./router/config";
 import type { RouterConfig, TierConfig, Preset, ModeConfig } from "./router/config";
 import { buildAgentOptions, warnAgentOptionsEffortOnce } from "./router/agent-options";
-import { selectTierPrompt } from "./router/prompts";
+import { selectTierPrompt, TOOL_AUTHORITY_CLAUSE } from "./router/prompts";
+import { stripDelegateInstructions } from "./router/instructions";
+import { buildDispatchHeader } from "./router/dispatch-header";
+import { detectFalseRefusal, parseTaskResult as parseRefusalTaskResult } from "./router/false-refusal";
 import {
   buildTiersOutput,
   buildPresetList,
@@ -72,7 +75,7 @@ import { exec as nodeExec } from "node:child_process";
 import { access, readFile as fsReadFile } from "node:fs/promises";
 import { tool } from "@opencode-ai/plugin";
 import { scrubText } from "./guard/scrub";
-import { accept } from "./verify/gate";
+import { accept, unverifiableGateResult } from "./verify/gate";
 import { createVerificationWiring, extractAssistantText } from "./verify/wiring";
 import {
   DEFAULT_DELEGATE_PROMPT_TIMEOUT_MS,
@@ -208,12 +211,105 @@ function buildPresetOutput(cfg: RouterConfig, args: string): string {
   return buildUnknownPreset(cfg, requestedPreset);
 }
 
+// Fail-closed skips in system.transform are silent by design, but a transform
+// that never carries a sessionID would silently disable routing for the whole
+// session. Surface it once rather than never.
+let warnedMissingTransformSession = false;
+function warnMissingTransformSessionOnce(): void {
+  if (warnedMissingTransformSession) return;
+  warnedMissingTransformSession = true;
+  console.warn(
+    "[model-router] chat.system.transform received no sessionID; skipping delegation-protocol injection (fail-closed)",
+  );
+}
+
+let warnedSessionLookupFailed = false;
+function warnSessionLookupFailedOnce(): void {
+  if (warnedSessionLookupFailed) return;
+  warnedSessionLookupFailed = true;
+  console.warn(
+    "[model-router] session lookup failed while classifying a chat.system.transform session; assuming top-level orchestrator",
+  );
+}
+
+const SESSION_ROOT_MEMO_MAX = 500;
+const SESSION_LOOKUP_RETRY_MS = 30_000;
+
 const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   let cfg = loadConfig();
   const activeTiers = getActiveTiers(cfg);
 
   // Per-plugin-instance session store: owns subagentSessionIDs and subagentCapState.
   const sessionStore = createSessionStore();
+  let systemDebugLogged = false;
+  let dispatchDebugLogged = false;
+
+  // Authoritative orchestrator-vs-child classification memo, keyed by sessionID.
+  // true  = proven top-level (no parentID) -> inject the delegation protocol
+  // false = proven child -> never inject
+  // absent = not yet resolved
+  //
+  // Exists because session.created is an EVENT: nothing guarantees the plugin
+  // has processed it before the child's first system.transform runs. Tier-named
+  // agents are also marked synchronously from chat.message, but `general`,
+  // `explore`, markdown-defined agents and everything mapped through
+  // `subagentTiers` (which can never be tier-named by construction) have no
+  // synchronous path at all. One session.get per session closes that race
+  // without depending on event ordering.
+  const sessionRootMemo = new Map<string, boolean>();
+  /** Recent lookup failures throttle retries without permanently memoising root. */
+  const sessionLookupFailedAt = new Map<string, number>();
+
+  /**
+   * Resolve whether a session is the top-level orchestrator, authoritatively.
+   *
+   * Returns true only when the backend confirms the session has no parentID.
+   * Returns false when it confirms a parentID (and marks the session as a child
+   * so the synchronous path catches it next time).
+   *
+   * On lookup failure it returns true — deliberately NOT fail-closed. A transient
+   * backend error must not silently strip the orchestrator of its routing rules
+   * for the rest of the session; the event path and the chat.message path both
+   * still cover the common cases, so the exposure is a rare, transient re-run of
+   * the old behaviour rather than a permanent loss of function.
+   */
+  const resolveIsRootSession = async (sessionID: string): Promise<boolean> => {
+    const memo = sessionRootMemo.get(sessionID);
+    if (memo !== undefined) {
+      if (!memo) sessionStore.markChildSession(sessionID);
+      return memo;
+    }
+    const failedAt = sessionLookupFailedAt.get(sessionID);
+    if (failedAt !== undefined && Date.now() - failedAt < SESSION_LOOKUP_RETRY_MS) {
+      return true;
+    }
+    try {
+      const res = await ctx.client.session.get({ path: { id: sessionID } });
+      if (!res || (res as { error?: unknown }).error || !res.data) {
+        throw new Error("session.get returned no session data");
+      }
+      sessionLookupFailedAt.delete(sessionID);
+      const parentID = res?.data?.parentID;
+      const isRoot = !(typeof parentID === "string" && parentID !== "");
+      sessionRootMemo.set(sessionID, isRoot);
+      while (sessionRootMemo.size > SESSION_ROOT_MEMO_MAX) {
+        const oldest = sessionRootMemo.keys().next().value;
+        if (oldest === undefined) break;
+        sessionRootMemo.delete(oldest);
+      }
+      if (!isRoot) sessionStore.markChildSession(sessionID);
+      return isRoot;
+    } catch {
+      sessionLookupFailedAt.set(sessionID, Date.now());
+      while (sessionLookupFailedAt.size > SESSION_ROOT_MEMO_MAX) {
+        const oldest = sessionLookupFailedAt.keys().next().value;
+        if (oldest === undefined) break;
+        sessionLookupFailedAt.delete(oldest);
+      }
+      warnSessionLookupFailedOnce();
+      return true;
+    }
+  };
 
   // Per-plugin-instance trajectory store (Phase 0.3 scaffolding — RECORD-ONLY).
   // Observes subagent tool activity to build a per-session scorecard. It emits
@@ -242,7 +338,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   // Layer-2's impure corner: exec, fs, and the opencode client, built once and
   // read back through getConfig so a reloaded cfg (from /preset, /budget or
   // /router enforce) applies to graded work too.
-  const { graderSessions, dispatchGrader, buildGateDeps, disposeChildSession } =
+  const { graderSessions, dispatchGrader, buildGateDeps, disposeChildSession, beginVerification, prepareVerification } =
     createVerificationWiring({
       client: ctx.client,
       directory: ctx.directory,
@@ -371,6 +467,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
           // here (not inside the try) so the finally below can dispose any that an
           // early return or a throw skipped — otherwise each retry leaks another.
           const producerSessions: string[] = [];
+          let baselineID: string | undefined;
           try {
             let activeCfg = cfg;
             try {
@@ -432,6 +529,12 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               const producerSid: string | undefined = created?.data?.id;
               if (!producerSid) return null;
               producerSessions.push(producerSid);
+              // Keep the ORIGINAL dispatch reference across retries/escalations:
+              // recapturing after a failed attempt would excuse its regression.
+              if (!baselineID) {
+                baselineID = producerSid;
+                beginVerification(changedFileStore, baselineID, args.cwd, dod);
+              }
               // Compose with Layer 1: guard the plugin-created producer session.
               try {
                 sessionStore.registerProducerSession(producerSid, tier, activeCfg);
@@ -477,8 +580,10 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                 producerText = "";
               }
 
+              const verification = await prepareVerification(changedFileStore, baselineID, producerSid, args.cwd);
               const artefact = {
-                changedFiles: changedFileStore.get(producerSid),
+                changedFiles: verification.changedFiles,
+                changeBaseline: verification.changeBaseline,
                 finalReturnText: producerText,
                 declaredOutputs: dod.deliverable ? [dod.deliverable] : [],
                 producerSessionID: producerSid,
@@ -491,6 +596,10 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               );
               // Grader sessions opened by THIS accept() call, and only those.
               const gateGraderSessions = new Set<string>();
+              const completedFailures: string[] = [];
+              const gateDeps = buildGateDeps(toolCtx?.sessionID, gateGraderSessions);
+              gateDeps.deterministic.testBaseline = verification.testBaseline;
+              gateDeps.deterministic.onFailure = reason => completedFailures.push(reason);
               let gateRes;
               try {
                 gateRes = producerError
@@ -512,15 +621,14 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                           ...(args.cwd ? { cwd: args.cwd } : {}),
                         },
                         artefact,
-                        buildGateDeps(toolCtx?.sessionID, gateGraderSessions),
+                        gateDeps,
                       ),
                       gateBudgetMs,
                       "verification gate",
                     );
               } catch (error) {
-                // A gate that ran out of budget is UNMET, never accepted: the
-                // one thing worse than a slow verifier is a fast fabricated
-                // pass. Abort any grader still in flight so the ceiling is a
+                // Budget exhaustion is unavailable verification, not producer
+                // failure. Abort any grader still in flight so the ceiling is a
                 // real cancellation and not just a stopped wait.
                 //
                 // Scoped to THIS gate invocation's graders. The wiring-global
@@ -538,25 +646,21 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                     }
                   }
                 }
-                gateRes = {
-                  accepted: false,
-                  verdict: {
-                    pass: false,
-                    method: "none" as const,
-                    reasons: [
-                      error instanceof RouterTimeoutError
-                        ? `verification gate timed out after ${gateBudgetMs}ms`
-                        : "verification failed (fail-closed)",
-                    ],
-                  },
-                  dodSource: dod.source,
-                };
+                gateRes = unverifiableGateResult(
+                  error instanceof RouterTimeoutError
+                    ? `verification gate timed out after ${gateBudgetMs}ms`
+                    : `verification unavailable: ${scrubText(String(error))}`,
+                  dod.source,
+                  activeCfg.enforcement?.verify?.strictUnverifiable,
+                  completedFailures,
+                );
               }
 
               // Per-attempt cleanup (drop producer session tracking + state).
-              changedFileStore.clear(producerSid);
+              if (producerSid !== baselineID) changedFileStore.clear(producerSid);
               try {
                 sessionStore.unregister(producerSid);
+                sessionRootMemo.delete(producerSid);
               } catch {
                 // non-fatal
               }
@@ -596,7 +700,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
 
               const action = nextAction(
                 state,
-                { pass: gateRes.accepted, reasons: gateRes.verdict.reasons },
+                { pass: gateRes.accepted, outcome: gateRes.verdict.outcome, reasons: gateRes.verdict.reasons },
                 policy,
               );
 
@@ -607,7 +711,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   true,
                   gateRes.verdict.method,
                 );
-                return producerText + buildAcceptedSuffix(gateRes.verdict.method);
+                return producerText + buildAcceptedSuffix(gateRes.verdict.method, gateRes.verdict.caveats, gateRes.verdict.notes);
               }
               if (action.action === "give_up") {
                 dumpDelegateScorecard(
@@ -636,6 +740,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
             // disposeChildSession is fail-soft, so re-disposing an already
             // disposed session is harmless.
             for (const sid of producerSessions) {
+              changedFileStore.clear(sid);
               await disposeChildSession(sid);
             }
           }
@@ -779,6 +884,59 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     // -----------------------------------------------------------------------
     "tool.execute.before": async (input: any, output: any) => {
       if (bypassed) return;
+      // Observe before execution too: an in-flight edit must contaminate a
+      // capture even if the test finishes before the edit's after-hook fires.
+      if (typeof input?.tool === "string") changedFileStore.observeEdit(input.tool,
+        typeof output?.args?.cwd === "string" ? output.args.cwd : undefined);
+      if (input?.tool === "task" && typeof input.callID === "string" && typeof input.sessionID === "string") {
+        const mode = resolveEnforcementMode({ config: cfg, env: process.env }).mode;
+        if (shouldVerifyTask("task", mode, cfg.enforcement?.verify?.require)) {
+          beginVerification(changedFileStore, `task:${input.sessionID}:${input.callID}`,
+            typeof output?.args?.cwd === "string" ? output.args.cwd : undefined,
+            buildDelegationDoD({
+              prompt: typeof output?.args?.prompt === "string" ? output.args.prompt : undefined,
+              description: typeof output?.args?.description === "string" ? output.args.description : undefined,
+            }));
+        }
+      }
+      // Dispatch hygiene is independent of subagent guard enforcement below.
+      // The plugin API declares generic args, not a task-specific argument shape.
+      try {
+        if (input?.tool === "task" && cfg.dispatchHeader !== false) {
+          const rawArgs: unknown = output?.args;
+          if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+            const args = rawArgs as Record<string, unknown>;
+            const tier = typeof args.subagent_type === "string"
+              ? args.subagent_type : args.subagentType;
+            if (
+              typeof tier === "string" &&
+              Object.prototype.hasOwnProperty.call(getActiveTiers(cfg), tier) &&
+              typeof args.prompt === "string" &&
+              !args.prompt.startsWith("[router] You are @")
+            ) {
+              // Resolve from the original dispatch, using the registration rules.
+              const parsed = parseCapDirective(args.prompt);
+              const override =
+                parsed === "none" && !/\breason:/i.test(args.prompt) ? null : parsed;
+              const baseline = cfg.tierCaps?.[tier] ?? DEFAULT_TIER_CAPS[tier] ?? 5;
+              const cap = override ?? baseline;
+              const prompt = buildDispatchHeader({ tier, cap, projectDirectory: ctx.directory }) +
+                "\n\n---\n\n" + args.prompt;
+              args.prompt = prompt;
+              if (process.env.MODEL_ROUTER_DISPATCH_DEBUG === "1" && !dispatchDebugLogged) {
+                dispatchDebugLogged = true;
+                const dir = join(tmpdir(), "opencode-model-router-trajectory");
+                mkdirSync(dir, { recursive: true });
+                writeFileSync(join(dir, "dispatch.log"), JSON.stringify({
+                  headerApplied: true, tier, promptLength: prompt.length,
+                }) + "\n", { flag: "a" });
+              }
+            }
+          }
+        }
+      } catch {
+        // Best-effort: malformed args or debug I/O must never break a dispatch.
+      }
       const sid = input?.sessionID;
       if (!sid || !sessionStore.isSubagent(sid) || typeof input?.tool !== "string") {
         return;
@@ -822,6 +980,23 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     "tool.execute.after": async (input: any, output: any) => {
       if (bypassed) return;
       sessionStore.recordToolCall(input, output);
+
+      // Best-effort false-refusal observation alongside the existing guard path.
+      // Keep scorecards unchanged; counts live in the TTL-managed trajectory.
+      try {
+        if (input?.tool === "task" && cfg.falseRefusalDetection !== false) {
+          const { childSessionID, text } = parseRefusalTaskResult(output);
+          if (childSessionID) {
+            const calls = trajectoryStore.toolCallCount(childSessionID);
+            if (detectFalseRefusal({ toolCalls: calls, resultText: text }).suspected) {
+              output.output = `[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. No tool call was observed for this child, so the capability claim in its answer is untested rather than demonstrated. Re-dispatch the same work with task_id="${childSessionID}" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n${output.output}`;
+              trajectoryStore.recordFalseRefusal(childSessionID);
+            }
+          }
+        }
+      } catch {
+        // Best-effort: malformed/frozen results must never break a dispatch.
+      }
 
       // Record-only trajectory observation (mutates internal maps only; never
       // touches output, so emitted banners/observations stay byte-identical).
@@ -874,10 +1049,11 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               prompt: input?.args?.prompt,
               description: input?.args?.description,
             });
+            const dispatchID = `task:${input.sessionID}:${input.callID}`;
+            const verification = await prepareVerification(changedFileStore, dispatchID, childSessionID ?? "", input?.args?.cwd);
             const artefact = {
-              changedFiles: childSessionID
-                ? changedFileStore.get(childSessionID)
-                : [],
+              changedFiles: verification.changedFiles,
+              changeBaseline: verification.changeBaseline,
               finalReturnText,
               declaredOutputs: dod.deliverable ? [dod.deliverable] : [],
               producerSessionID: childSessionID ?? "",
@@ -900,9 +1076,12 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               artefact.changedFiles.length === 0
             ) {
               if (childSessionID) changedFileStore.clear(childSessionID);
+              changedFileStore.clear(dispatchID);
               return;
             }
 
+            const gateDeps = buildGateDeps();
+            gateDeps.deterministic.testBaseline = verification.testBaseline;
             const res = await accept(
               {
                 dod,
@@ -916,19 +1095,23 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   : {}),
               },
               artefact,
-              buildGateDeps(),
+              gateDeps,
             );
             if (!res.accepted && !res.verdict.skipped) {
               const ladder = cfg.enforcement?.escalate?.ladder ?? ["fast", "medium", "heavy"];
               const li = ladder.indexOf(producerTier);
-              const nextTier = li >= 0 && li < ladder.length - 1 ? ladder[li + 1] : null;
+              const nextTier = res.verdict.outcome !== "unverifiable" && li >= 0 && li < ladder.length - 1 ? ladder[li + 1] : null;
               const note = scrubText(buildForcingNote(res.verdict.reasons, { producerTier, nextTier }));
               output.output =
                 typeof output.output === "string"
                   ? output.output + "\n\n" + note
                   : note;
             }
+            if (res.accepted && (res.verdict.caveats?.length || res.verdict.notes?.length)) {
+              output.output += buildAcceptedSuffix(res.verdict.method, res.verdict.caveats, res.verdict.notes);
+            }
             if (childSessionID) changedFileStore.clear(childSessionID);
+            changedFileStore.clear(dispatchID);
           } catch {
             // fail-closed: a verification error must NEVER throw out of the after-hook
           }
@@ -960,13 +1143,51 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     },
 
     // -----------------------------------------------------------------------
-    // Gated trajectory debug dump (Phase 0.3, T0.3.3) — RECORD-ONLY, OPT-IN.
-    // No-op unless MODEL_ROUTER_TRAJECTORY_DEBUG=1. On session.idle, writes the
-    // session's trajectory scorecard to a throwaway file under the OS temp dir
-    // for manual inspection. Best-effort; never throws into the session.
-    // Emits nothing model-visible, so GA-1 (no-regression) is preserved.
+    // Session lifecycle: classify children on session.created, then write
+    // enforcement scorecards on session.idle. Full trajectory debug dumps
+    // remain opt-in behind MODEL_ROUTER_TRAJECTORY_DEBUG=1 (Phase 0.3, T0.3.3).
+    // Dumps go under the OS temp dir for manual inspection. Best-effort;
+    // never throws into the session or emits model-visible debug output.
     // -----------------------------------------------------------------------
     event: async ({ event }: any) => {
+      if (event?.type === "session.deleted") {
+        try {
+          const id = event?.properties?.info?.id;
+          if (typeof id === "string") {
+            sessionRootMemo.delete(id);
+            sessionLookupFailedAt.delete(id);
+            sessionStore.unregister(id);
+          }
+        } catch {
+          // best-effort: cleanup must never crash a real session
+        }
+        return;
+      }
+      // Child-session classification. opencode reports every child session with
+      // a parentID, which is the only agent-name-INDEPENDENT signal available:
+      // registerFromChatMessage recognises a session only when its agent name is
+      // literally an active tier, so `general`, `explore`, markdown agents,
+      // every agent mapped through `subagentTiers` (which by construction can
+      // never be tier-named — see resolveSubagentOverrides) and the plugin's own
+      // grader sessions all went unmarked. Unmarked meant system.transform
+      // injected "You are the orchestrator, delegate with Task(...)" into a
+      // subagent that has no task tool, and the subagent refused the work.
+      if (event?.type === "session.created") {
+        const info = event?.properties?.info;
+        if (
+          typeof info?.id === "string" &&
+          typeof info?.parentID === "string" &&
+          info.parentID !== ""
+        ) {
+          try {
+            sessionStore.markChildSession(info.id);
+          } catch {
+            // best-effort: classification must never crash a real session
+          }
+        }
+        return;
+      }
+
       if (event?.type !== "session.idle") return;
       const sid = event?.properties?.sessionID;
       if (typeof sid !== "string") return;
@@ -1017,16 +1238,29 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
             ? `${CLAUDE_TIER_PREFIX[name]}\n\n${CLAUDE_ANTI_NARRATION}`
             : CLAUDE_TIER_PREFIX[name]
           : undefined;
-        const finalPrompt =
+        const styledPrompt =
           claudePrefix && resolvedPrompt
             ? `${claudePrefix}\n\n---\n\n${resolvedPrompt}`
             : resolvedPrompt;
+
+        // The tool-authority clause is appended HERE rather than inside each
+        // tier prompt, for three reasons: one copy instead of six; the
+        // style-comparison contracts in test/unit/prompt-style.test.ts compare
+        // goal-oriented against prescriptive length, and adding the same
+        // constant to both sides erodes a ratio it is meant to protect; and a
+        // user-supplied `tier.prompt` bypasses the shipped defaults entirely,
+        // so a clause living in the defaults would not protect the tiers most
+        // likely to be hand-written.
+        const finalPrompt = styledPrompt
+          ? `${styledPrompt}\n\n${TOOL_AUTHORITY_CLAUSE}`
+          : TOOL_AUTHORITY_CLAUSE;
 
         const agentDef: Record<string, unknown> = {
           model: tier.model,
           mode: "subagent",
           description: tier.description ?? `@${name} tier (${tier.model})`,
           maxSteps: tier.steps,
+          steps: tier.steps,
           prompt: finalPrompt,
           color: tier.color,
         };
@@ -1146,10 +1380,47 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
         // Use last known config if file read fails
       }
 
-      // Skip injection for child (subagent) sessions.
-      // Child sessions are detected via session.created events with a parentID.
+      // Inject ONLY when this is provably the top-level orchestrator session.
+      //
+      // Fail CLOSED. The old guard was `sessionID && isSubagent(sessionID)`,
+      // which injected whenever the session could not be proven to be a child.
+      // Both failure directions are not equal: a missed injection costs the
+      // orchestrator its routing rules, while a spurious injection tells a
+      // subagent it is an orchestrator that MUST delegate with a `task` tool it
+      // does not have — and a literal-minded model then refuses the dispatch
+      // outright instead of doing the work.
       const sessionID = _input?.sessionID;
-      if (sessionID && sessionStore.isSubagent(sessionID)) return;
+      if (typeof sessionID !== "string" || sessionID === "") {
+        warnMissingTransformSessionOnce();
+        return;
+      }
+      // graderSessions is checked separately from isSubagent because it is
+      // populated synchronously the instant client.session.create resolves,
+      // whereas the session.created event that feeds markChildSession may not
+      // have arrived yet. A grader told to orchestrate stalls until its budget
+      // expires.
+      const isChild =
+        graderSessions.has(sessionID) ||
+        sessionStore.isSubagent(sessionID) ||
+        !(await resolveIsRootSession(sessionID));
+
+      if (isChild) {
+        if (process.env.MODEL_ROUTER_SYSTEM_DEBUG === "1" && !systemDebugLogged) {
+          systemDebugLogged = true;
+          try {
+            const dir = join(tmpdir(), "opencode-model-router-trajectory");
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, "system.log"), JSON.stringify({
+              length: output.system.length,
+              entries: output.system.map((entry: string) => entry.slice(0, 60)),
+            }) + "\n", { flag: "a" });
+          } catch {
+            // Best-effort opt-in diagnostics must never break a real session.
+          }
+        }
+        stripDelegateInstructions(output, cfg, ctx.directory);
+        return;
+      }
 
       // For Claude-backed orchestrators, prepend an adversarial opener that
       // revokes the cached "Claude Code explorer" priming for the routing

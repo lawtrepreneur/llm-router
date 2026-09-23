@@ -399,6 +399,26 @@ export function createSessionStore(options: SessionStoreOptions = {}) {
       touch(sessionID);
     },
 
+    /**
+     * Mark a session as a child (subagent) session without assigning a tier or
+     * cap state. This is the agent-name-INDEPENDENT classifier: opencode reports
+     * every child session — a `general`/`explore` dispatch, a markdown-defined
+     * agent, an agent repointed through `subagentTiers`, or a plugin-created
+     * grader — with a `parentID`, whereas `registerFromChatMessage` only ever
+     * recognises a name that is literally an active tier.
+     *
+     * Deliberately sets NO cap state. Cap/redundancy banners are a tier-scoped
+     * feature and `recordToolCall` early-returns without it, so an untiered
+     * child keeps byte-identical tool output. The only thing this changes is
+     * `isSubagent`, which is what suppresses the orchestrator delegation
+     * protocol in the system.transform hook.
+     */
+    markChildSession(sessionID: string): void {
+      if (!sessionID) return;
+      subagentSessionIDs.add(sessionID);
+      touch(sessionID);
+    },
+
     /** Remove a session from tracking (used to clean up delegate producer sessions). */
     unregister(sessionID: string): void {
       evict(sessionID);
@@ -444,13 +464,18 @@ export function createSessionStore(options: SessionStoreOptions = {}) {
       cfg: RouterConfig,
       tierNames: string[],
     ): RegisterResult {
-      if (!input.agent || !tierNames.includes(input.agent)) {
+      if (!input.agent) return { registered: false, resumed: false };
+      // Tier names map to themselves; pre-existing agents use subagentTiers.
+      // resolveSubagentOverrides skips tier-name collisions, keeping these disjoint.
+      const tierName = tierNames.includes(input.agent)
+        ? input.agent
+        : cfg.subagentTiers?.[input.agent];
+      if (!tierName || !tierNames.includes(tierName)) {
         return { registered: false, resumed: false };
       }
 
       subagentSessionIDs.add(input.sessionID);
 
-      const tierName = input.agent;
       const dispatchText = extractDispatchText(output);
       // CAP:none is honored only when the dispatch carries a justification
       // (a `reason:` line). An unjustified CAP:none falls back to the tier

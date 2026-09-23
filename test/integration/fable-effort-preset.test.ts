@@ -9,9 +9,9 @@ describe("fable-effort preset", () => {
   const preset = validateConfig(raw).presets["fable-effort"];
 
   it("uses the same Fable 5 model across all tiers", () => {
-    expect(preset.fast.model).toBe("anthropic/claude-fable-5");
-    expect(preset.medium.model).toBe("anthropic/claude-fable-5");
-    expect(preset.heavy.model).toBe("anthropic/claude-fable-5");
+    expect(preset.fast.model).toBe("anthropic/claude-fable-5-1");
+    expect(preset.medium.model).toBe("anthropic/claude-fable-5-1");
+    expect(preset.heavy.model).toBe("anthropic/claude-fable-5-1");
   });
 
   it("maps each tier to a distinct Anthropic effort", () => {
@@ -50,11 +50,11 @@ test("applies fable-effort preset options through config hook", async () => {
     const ocCfg: any = {};
     await hooks.config(ocCfg);
 
-    expect(ocCfg.agent.fast.model).toBe("anthropic/claude-fable-5");
+    expect(ocCfg.agent.fast.model).toBe("anthropic/claude-fable-5-1");
     expect(ocCfg.agent.fast.options.effort).toBe("low");
-    expect(ocCfg.agent.medium.model).toBe("anthropic/claude-fable-5");
+    expect(ocCfg.agent.medium.model).toBe("anthropic/claude-fable-5-1");
     expect(ocCfg.agent.medium.options.effort).toBe("high");
-    expect(ocCfg.agent.heavy.model).toBe("anthropic/claude-fable-5");
+    expect(ocCfg.agent.heavy.model).toBe("anthropic/claude-fable-5-1");
     expect(ocCfg.agent.heavy.options.effort).toBe("xhigh");
   } finally {
     if (prevHome === undefined) delete process.env.HOME;

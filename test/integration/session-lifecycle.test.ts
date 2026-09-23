@@ -1,9 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PluginInput } from "@opencode-ai/plugin";
+import type { Model } from "@opencode-ai/sdk";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ModelRouterPlugin from "../../src/index";
-import { invalidateConfigCache } from "../../src/router/config";
+import { invalidateConfigCache, loadConfig } from "../../src/router/config";
+import { getActiveTiers } from "../../src/router/protocol";
+import * as sessions from "../../src/router/sessions";
+import { buildDispatchHeader } from "../../src/router/dispatch-header";
+import { snapshotTree } from "../../src/verify/tree";
+// Session lifecycle tests must not launch this repository's real test suite as
+// a background baseline. Baseline I/O has separate store/wiring/adapter tests.
+vi.mock("../../src/verify/tree", () => ({ snapshotTree: vi.fn(async () => undefined) }));
 
 /**
  * Regression coverage for the child-session leak.
@@ -25,24 +34,37 @@ interface Harness {
   createdIDs: string[];
   createOptions: any[];
   graderIDs: string[];
+  graderPrompts: string[];
   aborted: string[];
   deleted: string[];
+  getSession: ReturnType<typeof vi.fn>;
 }
 
 function makeHarness(opts: {
   graderPromptRejects?: boolean;
   graderPass?: boolean;
   producerPromptRejects?: boolean;
+  parentID?: string;
+  sessionGetRejects?: boolean;
+  sessionGetError?: boolean;
+  onProducer?: () => Promise<void>;
 } = {}): Harness {
   const createdIDs: string[] = [];
   const createOptions: any[] = [];
   const graderIDs: string[] = [];
+  const graderPrompts: string[] = [];
   const aborted: string[] = [];
   const deleted: string[] = [];
   let counter = 0;
+  const getSession = vi.fn(async () => {
+    if (opts.sessionGetRejects) throw new Error("session lookup failure");
+    if (opts.sessionGetError) return { data: undefined, error: { message: "not found" } };
+    return { data: { parentID: opts.parentID } };
+  });
 
   const client = {
     session: {
+      get: getSession,
       create: async (options: any) => {
         counter += 1;
         const id = `sess-${counter}`;
@@ -55,6 +77,7 @@ function makeHarness(opts: {
         const isGrader = request?.body?.system !== undefined;
         if (isGrader) {
           graderIDs.push(request?.path?.id);
+          graderPrompts.push(request.body.parts[0].text);
           if (opts.graderPromptRejects) {
             throw new Error("grader transport failure");
           }
@@ -76,6 +99,7 @@ function makeHarness(opts: {
         if (opts.producerPromptRejects) {
           throw new Error("producer transport failure");
         }
+        await opts.onProducer?.();
         return { data: { parts: [{ type: "text", text: "producer output" }] } };
       },
       abort: async (options: any) => {
@@ -98,7 +122,7 @@ function makeHarness(opts: {
     client: client as any,
   };
 
-  return { ctx, createdIDs, createOptions, graderIDs, aborted, deleted };
+  return { ctx, createdIDs, createOptions, graderIDs, graderPrompts, aborted, deleted, getSession };
 }
 
 async function runDelegate(
@@ -122,6 +146,7 @@ describe("child session lifecycle", () => {
   let savedUserProfile: string | undefined;
 
   beforeEach(() => {
+    vi.mocked(snapshotTree).mockResolvedValue(undefined);
     const dir = join(tmpdir(), `oc-mr-session-lifecycle-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
     savedHome = process.env.HOME;
@@ -133,6 +158,7 @@ describe("child session lifecycle", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     if (savedUserProfile === undefined) delete process.env.USERPROFILE;
@@ -141,9 +167,311 @@ describe("child session lifecycle", () => {
     invalidateConfigCache();
   });
 
+  it.each(["task", "delegate"])("%s grader receives the dispatch-time delta, not the dirty tree", async mode => {
+    const cfg = loadConfig();
+    cfg.enforcement ??= {}; cfg.enforcement.verify ??= {};
+    cfg.enforcement.verify.testBaseline = false;
+    const old = join(process.cwd(), "predating.ts");
+    const added = join(process.cwd(), "producer.ts");
+    const before = { cwd: process.cwd(), head: "head", fingerprint: "before", dirty: true, files: [{ path: old, status: " M" }] };
+    vi.mocked(snapshotTree).mockResolvedValue(before);
+    const after = { ...before, fingerprint: "after", files: [...before.files, { path: added, status: "??" }] };
+    const h = makeHarness({ onProducer: async () => { vi.mocked(snapshotTree).mockResolvedValue(after); } });
+    if (mode === "delegate") await runDelegate(h);
+    else {
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const input = { tool: "task", sessionID: ORCHESTRATOR_SID, callID: "baseline-task" };
+      const args = { subagent_type: "fast", prompt: "Investigate.\n[acceptance]\ncriteria: investigation complete\n[/acceptance]" };
+      await hooks["tool.execute.before"]!(input, { args });
+      vi.mocked(snapshotTree).mockResolvedValue(after);
+      await hooks["tool.execute.after"]!({ ...input, args }, { title: "task", output: "findings", metadata: { sessionId: "child" } });
+    }
+    expect(h.graderPrompts).toHaveLength(1);
+    expect(h.graderPrompts[0]).toContain("Producer delta only");
+    expect(h.graderPrompts[0]).toContain(added);
+    expect(h.graderPrompts[0]).not.toContain(old);
+  });
+
+  describe("task false-refusal detection", () => {
+    it.each([
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: true, id: true, tool: "task", suspected: true },
+      { calls: 1, text: "ESCALATE: tools unavailable", enabled: true, id: true, tool: "task", suspected: false },
+      { calls: 0, text: "DONE: no tools needed", enabled: true, id: true, tool: "task", suspected: false },
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: false, id: true, tool: "task", suspected: false },
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: true, id: false, tool: "task", suspected: false },
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: true, id: true, tool: "read", suspected: false },
+    ])("annotates only suspected returns: %j", async ({ calls, text, enabled, id, tool, suspected }) => {
+      loadConfig().falseRefusalDetection = enabled;
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      await hooks.event!({ event: { type: "session.created", properties: { info: {
+        id: "refusal-child", parentID: ORCHESTRATOR_SID, projectID: "project",
+        directory: process.cwd(), title: "child", version: "1", time: { created: 0, updated: 0 },
+      } } } });
+      for (let i = 0; i < calls; i++) {
+        await hooks["tool.execute.after"]!({ tool: "read", sessionID: "refusal-child", callID: `read-${i}`, args: {} }, { title: "read", output: "contents", metadata: {} });
+      }
+      const output = { title: "task", output: text, metadata: id ? { sessionId: "refusal-child" } : {} };
+      await hooks["tool.execute.after"]!({ tool, sessionID: ORCHESTRATOR_SID, callID: "task-result", args: {} }, output);
+      if (suspected) {
+        expect(output.output).toBe('[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. No tool call was observed for this child, so the capability claim in its answer is untested rather than demonstrated. Re-dispatch the same work with task_id="refusal-child" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n' + text);
+      } else {
+        expect(output.output).toBe(text);
+      }
+    });
+  });
+
+  describe("task dispatch headers", () => {
+    it.each([
+      { prompt: "Do the work", cap: 11 },
+      { prompt: "CAP:7\nDo the work", cap: 7 },
+      { prompt: "CAP:none\nreason: inspect related modules\nDo the work", cap: "none" },
+      { prompt: "CAP:none\nDo the work", cap: 11 },
+      { prompt: "Do the work\nCAP:7\nReturn results", cap: 7 },
+      { prompt: "Do the work\nCAP:none\nreason: inspect related modules\nReturn results", cap: "none" },
+      { prompt: "Read-only budget: uncapped for this dispatch", cap: 11 },
+    ] as const)("announces the registered budget for $prompt", async ({ prompt, cap }) => {
+      const cfg = loadConfig();
+      cfg.tierCaps = { ...cfg.tierCaps, fast: 11 };
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: "fast", prompt: String(prompt) } };
+      await hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      const header = output.args.prompt.split("\n\n---\n\n")[0]!;
+      const announcement = cap === "none" ? "uncapped for this dispatch" : `${cap} calls`;
+      expect(header).toContain(`Read-only budget: ${announcement}.`);
+      expect(output.args.prompt).toBe(buildDispatchHeader({ tier: "fast", cap, projectDirectory: process.cwd() }) + "\n\n---\n\n" + prompt);
+
+      // Pin equality against registration, not just the header builder. Also
+      // register the emitted prompt: instructional examples must not change caps.
+      for (const text of [prompt, output.args.prompt]) {
+        const store = sessions.createSessionStore();
+        expect(store.registerFromChatMessage(
+          { agent: "fast", sessionID: "budget-child" },
+          { parts: [{ type: "text", text }] }, cfg, Object.keys(getActiveTiers(cfg)),
+        ).registered).toBe(true);
+        const result = { output: "contents" };
+        store.recordToolCall({ sessionID: "budget-child", tool: "read", args: { filePath: "file.ts" } }, result);
+        const announced = header.match(/Read-only budget: (\d+) calls\./)?.[1] ?? "∞";
+        expect(result.output).toContain(`[cap: 1/${announced}]`);
+      }
+    });
+
+    it.each(["subagent_type", "subagentType"])("prepends using %s and is idempotent", async (field) => {
+      const cfg = loadConfig();
+      cfg.tierCaps = { ...cfg.tierCaps, fast: 11 };
+      const h = makeHarness();
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const output = { args: { [field]: "fast", prompt: "Do the work" } };
+      const call = { tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" };
+      await hooks["tool.execute.before"]!(call, output);
+      const expected = buildDispatchHeader({ tier: "fast", cap: 11, projectDirectory: process.cwd() }) + "\n\n---\n\nDo the work";
+      expect(output.args.prompt).toBe(expected);
+      await hooks["tool.execute.before"]!(call, output);
+      expect(output.args.prompt).toBe(expected);
+    });
+
+    it.each([
+      { tool: "read", args: { subagent_type: "fast", prompt: "original" } },
+      { tool: "task", args: { subagent_type: "unknown", prompt: "original" } },
+      { tool: "task", args: { prompt: "original" } },
+      { tool: "task", args: { subagent_type: "toString", prompt: "original" } },
+      { tool: "task", args: { subagent_type: "fast", prompt: 42 } },
+      { tool: "task", args: null },
+      { tool: "task", args: { subagent_type: "fast", prompt: "[router] You are @fast. Existing header" } },
+    ])("leaves unsupported or already-prefixed calls unchanged: %j", async ({ tool, args }) => {
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args };
+      const before = structuredClone(output);
+      await hooks["tool.execute.before"]!({ tool, sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      expect(output).toEqual(before);
+    });
+
+    it("can be disabled by config", async () => {
+      loadConfig().dispatchHeader = false;
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: "fast", prompt: "original" } };
+      await hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      expect(output.args.prompt).toBe("original");
+    });
+
+    it.each(["fast", "custom"])("resolves default cap for %s", async (tier) => {
+      const cfg = loadConfig();
+      cfg.tierCaps = undefined;
+      getActiveTiers(cfg).custom = { model: "test/model" };
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: tier, prompt: "original" } };
+      await hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      expect(output.args.prompt).toContain(`Read-only budget: ${sessions.DEFAULT_TIER_CAPS[tier] ?? 5} calls.`);
+    });
+
+    it("does not throw if dispatch args cannot be mutated", async () => {
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: Object.freeze({ subagent_type: "fast", prompt: "original" }) };
+      await expect(hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output)).resolves.toBeUndefined();
+      expect(output.args.prompt).toBe("original");
+    });
+  });
+
   // -------------------------------------------------------------------------
   // parentID
   // -------------------------------------------------------------------------
+
+  describe("system transform session resolver", () => {
+    const model: Model = {
+      id: "test-model",
+      providerID: "test-provider",
+      api: { id: "test-model", url: "http://localhost", npm: "test" },
+      name: "Test model",
+      capabilities: {
+        temperature: true, reasoning: false, attachment: false, toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+      },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limit: { context: 1000, output: 100 },
+      status: "active",
+      options: {},
+      headers: {},
+    };
+
+    it("skips an unknown child before session.created and marks it as a subagent", async () => {
+      const storeSpy = vi.spyOn(sessions, "createSessionStore");
+      const h = makeHarness({ parentID: ORCHESTRATOR_SID });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const output = { system: [] as string[] };
+
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "child", model }, output);
+
+      expect(output.system).toEqual([]);
+      expect(storeSpy.mock.results[0].value.isSubagent("child")).toBe(true);
+      expect(h.getSession).toHaveBeenCalledWith({ path: { id: "child" } });
+    });
+
+    it("injects exactly one entry for an unknown root", async () => {
+      const h = makeHarness();
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const output = { system: [] as string[] };
+
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output);
+
+      expect(output.system).toHaveLength(1);
+    });
+
+    it.each([true, false])("filters global instructions only for children (child=%s)", async (child) => {
+      const h = makeHarness({ parentID: child ? ORCHESTRATOR_SID : undefined });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const global = "Instructions from: C:\\Users\\user\\CLAUDE.md\nOrchestrate";
+      const output = { system: ["provider", global] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "instructions", model }, output);
+      if (child) {
+        expect(output.system).toEqual(["provider"]);
+      } else {
+        expect(output.system).toHaveLength(3);
+        expect(output.system.slice(0, 2)).toEqual(["provider", global]);
+        expect(output.system[2]).toContain("fast");
+      }
+    });
+
+    it.each([undefined, ORCHESTRATOR_SID])("looks up each session once (parentID=%s)", async (parentID) => {
+      const h = makeHarness({ parentID });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      for (let i = 0; i < 2; i++) {
+        const output = { system: [] as string[] };
+        await hooks["experimental.chat.system.transform"]!({ sessionID: "session", model }, output);
+        expect(output.system).toHaveLength(parentID ? 0 : 1);
+      }
+      expect(h.getSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["rejection", "error response"])("throttles %s for 30s, then recovers without memoising root", async (failure) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const store = sessions.createSessionStore();
+      vi.spyOn(sessions, "createSessionStore").mockReturnValue(store);
+      const opts = { sessionGetRejects: failure === "rejection", sessionGetError: failure === "error response", parentID: ORCHESTRATOR_SID };
+      const h = makeHarness(opts);
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      for (let i = 0; i < 2; i++) {
+        now = i * 29_999;
+        const output = { system: [] as string[] };
+        await expect(hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output)).resolves.toBeUndefined();
+        expect(output.system).toHaveLength(1);
+        expect(store.isSubagent("root")).toBe(false);
+      }
+      expect(h.getSession).toHaveBeenCalledTimes(1);
+      opts.sessionGetRejects = false;
+      opts.sessionGetError = false;
+      now = 30_000;
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output);
+      expect(output.system).toEqual([]);
+      expect(store.isSubagent("root")).toBe(true);
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("re-marks a memoised child after idle eviction", async () => {
+      const store = sessions.createSessionStore();
+      vi.spyOn(sessions, "createSessionStore").mockReturnValue(store);
+      const h = makeHarness({ parentID: ORCHESTRATOR_SID });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "child", model }, { system: [] });
+      store.sweep(Date.now(), 0);
+      expect(store.isSubagent("child")).toBe(false);
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "child", model }, output);
+      expect(store.isSubagent("child")).toBe(true);
+      expect(output.system).toEqual([]);
+      expect(h.getSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([false, true])("evicts deleted session memo, failure stamp and store (failed=%s)", async (sessionGetError) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const store = sessions.createSessionStore();
+      vi.spyOn(sessions, "createSessionStore").mockReturnValue(store);
+      const opts = { sessionGetError, parentID: undefined as string | undefined };
+      const h = makeHarness(opts);
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "deleted", model }, { system: [] });
+      store.registerProducerSession("deleted", "fast", loadConfig());
+      // The SDK declares properties.info: Session; only id is consumed here.
+      const eventHook = hooks.event as (input: { event: { type: "session.deleted"; properties: { info: { id: string } } } }) => Promise<void>;
+      await eventHook({ event: { type: "session.deleted", properties: { info: { id: "deleted" } } } });
+      expect(store.isSubagent("deleted")).toBe(false);
+      expect(store.getTier("deleted")).toBeNull();
+      opts.sessionGetError = false;
+      opts.parentID = ORCHESTRATOR_SID;
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "deleted", model }, output);
+      expect(output.system).toEqual([]);
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("bounds failed lookups to 500 sessions with oldest-first eviction", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.spyOn(Date, "now").mockReturnValue(0);
+      const h = makeHarness({ sessionGetError: true });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const transform = hooks["experimental.chat.system.transform"]!;
+      for (let i = 0; i <= 500; i++) {
+        await transform({ sessionID: `failed-${i}`, model }, { system: [] });
+      }
+      await transform({ sessionID: "failed-1", model }, { system: [] });
+      expect(h.getSession).toHaveBeenCalledTimes(501);
+      await transform({ sessionID: "failed-0", model }, { system: [] });
+      expect(h.getSession).toHaveBeenCalledTimes(502);
+    });
+  });
+
+  it("emits both steps and legacy maxSteps for every tier agent", async () => {
+    const h = makeHarness();
+    const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+    const config: { agent: Record<string, { steps?: number; maxSteps?: number }> } = { agent: {} };
+    await hooks.config!(config);
+    for (const [name, tier] of Object.entries(getActiveTiers(loadConfig()))) {
+      expect(config.agent[name]).toHaveProperty("steps", tier.steps);
+      expect(config.agent[name]).toHaveProperty("maxSteps", tier.steps);
+    }
+  });
 
   it("creates every child session with the orchestrator as parentID", async () => {
     const h = makeHarness({ graderPass: true });

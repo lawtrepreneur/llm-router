@@ -237,11 +237,11 @@ describe("accept() — checker path", () => {
     expect(r.verdict.reasons.join(" ")).toMatch(/independent/i);
   });
 
-  it("12. fail-closed: a throwing grader dispatch => not accepted", async () => {
+  it("12. strict fail-closed: a throwing grader dispatch => not accepted", async () => {
     const r = await accept(
       { dod: checkerDoD() },
       artefact(),
-      deps({ checker: fakeCheckerDeps({ throws: true }) }),
+      deps({ checker: fakeCheckerDeps({ throws: true }), strictUnverifiable: true }),
     );
     expect(r.accepted).toBe(false);
   });

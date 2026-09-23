@@ -29,17 +29,92 @@ gets any of them wrong.
 | `fallback` | `FallbackConfig` (optional) | `global` chains for the five shipped providers | Provider fallback chains, either `global` (keyed by provider) or `presets` (keyed by preset, then provider). Rendered into the protocol's `Chain:` line. A chain keyed by a provider the active preset never routes to is **dormant by design** and is not validated against the catalog — the shipped chains cover every provider, so on a single-provider install most of them are inert. A chain entry naming a preset that does not exist is still reported, since that is a config error whatever your providers are. |
 | `enforcement` | object (optional) | shipped explicitly at the previous defaults | The verification/acceptance layer. Documented in the rest of this file. |
 
-The next keys are **not in the bundled `tiers.json`** — they are override-only and opt-in.
+The next keys are **not in the bundled `tiers.json`** — they use in-code defaults and can be overridden.
 `validateConfig` accepts them wherever they appear, but absent means the feature is off (or
 falls back to its in-code default), so you only ever see them in an overrides file.
 
 | Key | Type | Default when absent | Notes |
 |---|---|---|---|
+| `delegateInstructions` | `"strip-global" \| "strip-all" \| "keep"` | `"strip-global"` | Instruction-file filtering for delegate sessions only; never changes the orchestrator. See below. |
+| `dispatchHeader` | `boolean` | `true` | Prepends mechanical guidance to tier-targeted `task` prompts. See below. |
+| `falseRefusalDetection` | `boolean` | `true` | Annotates capability-complaining hand-backs with zero recorded child tool calls. See below. |
 | `tierPromptsGoalOriented` | `Record<string, string>` | built-in goal-oriented prompts in `src/router/prompts.ts` | Goal-oriented twin of `tierPrompts`; an entry replaces the built-in for that tier. See [Prompt styles](#prompt-styles-promptstyle). |
 | `modelGenerations` | `{ strong?: string[] }` | `DEFAULT_STRONG_MODEL_PATTERNS` in `src/router/config.ts` | Shared model-ID substring pattern lists. `strong` drives `promptStyle: "auto"` resolution. |
 | `subagentTiers` | `Record<string, string>` | `{}` — no pre-existing agent is touched | Opt-in map of your own subagent names to tier names, repointing them at the active preset's model for that tier. Unknown tier names are skipped at resolve time rather than rejected. |
 | `antiNarration` | `boolean` | `false` | Adds the anti-narration clause to Claude tier prompts and enables the non-blocking narration detector. |
 | `experimental` | `{ verifiedDelegateTool?: boolean }` | `{}` — every experimental feature off | Opt-in features. `verifiedDelegateTool` exposes the independently-verified `delegate` tool, also settable via `MODEL_ROUTER_VERIFIED_DELEGATE=1`. |
+
+---
+
+## `falseRefusalDetection`
+
+Defaults to `true`; set `falseRefusalDetection: false` to disable. Non-boolean
+values are rejected. For `task` results with a child session ID, the first
+non-empty line must start with `ESCALATE:`, `NEED MORE:`, `NEED CONTEXT:`,
+`SCOPE GROWTH:`, or `BLOCKED:` and the text must complain about capabilities.
+Only zero recorded tool calls triggers the advisory `[router] FALSE-REFUSAL SUSPECT`
+prefix, recommending retry in the same session, not tier escalation. No automatic
+retry occurs. Metadata IDs take precedence over task-wrapper IDs.
+
+Counts are retained internally per child in the existing TTL-managed trajectory
+store as `falseRefusalCount`. Existing trajectory metrics and the pinned scorecard
+format are unchanged; surfacing the counter on idle is deferred to a follow-up.
+Runtime child-ID propagation and complete, correctly ordered child tool events
+remain assumptions; zero observed calls does not prove tools were available.
+
+---
+
+## `dispatchHeader`
+
+Defaults to `true`; set `dispatchHeader: false` to restore pre-feature behaviour,
+where dispatch hygiene depended on the orchestrator writing it. Non-boolean values
+are rejected by `validateConfig`.
+
+The `task` before-hook prepends tier identity, the current project directory,
+tool-schema authority, empty-result/gitignore guidance, the read-only budget, and
+a zero-tool-call false-refusal notice. It accepts `subagent_type` or `subagentType`
+only when the tier belongs to the active preset. Other tools, missing or unknown
+tiers, non-string prompts, router bypass, and prompts already beginning with
+`[router] You are @` are unchanged. An absent or empty directory omits that paragraph.
+The cap follows `tierCaps[tier] ?? DEFAULT_TIER_CAPS[tier] ?? 5`.
+
+Measured using the pure builder's string length: **1,031 characters** for `@fast`,
+cap `8`, and cwd `D:\git\opencode-model-router`, including LF paragraph separators
+and no trailing newline. The dispatch adds a separate `\n\n---\n\n` separator.
+This does not change `assembleSystemPrompt` or its pinned snapshots.
+
+Diagnostic escape hatch: set `MODEL_ROUTER_DISPATCH_DEBUG=1` to append one JSON
+record per plugin instance to `opencode-model-router-trajectory/dispatch.log`
+under the OS temp directory, recording `headerApplied`, `tier`, and the resulting
+`promptLength` without prompt contents. It is silent by default and best-effort.
+**Propagation of the mutated before-hook args to the actual child session remains
+unverified**; the diagnostic proves hook application, not child receipt.
+
+---
+
+## `delegateInstructions`
+
+Controls instruction files injected by opencode into **delegate (child) sessions only**.
+The orchestrator's instruction files are never filtered.
+
+- `"strip-global"` (default): removes instruction files outside the project directory and keeps project-local files. If the project directory is undefined or empty, every instruction file is treated as global and removed.
+- `"strip-all"`: removes every injected instruction-file block.
+- `"keep"`: restores pre-feature behaviour, leaving all instruction files untouched.
+
+opencode injects instruction files into children too. A user's global orchestrator
+persona can therefore tell a delegate to delegate work through Task, or obey a
+dispatch's REQUIRED TOOLS whitelist, even though that delegate has no task tool.
+The default removes that conflict while retaining project-local coding conventions.
+Paths are compared case- and separator-insensitively with a directory boundary;
+`project-other` is not inside `project`. Blocks begin at an `Instructions from:`
+marker line and extend to the next marker or the end of the entry. Text before
+the first marker and retained local sections are preserved.
+
+For layout diagnostics, set `MODEL_ROUTER_SYSTEM_DEBUG=1`. On the first child
+transform per plugin instance, the router appends the original entry count and
+each entry's first 60 characters to `opencode-model-router-trajectory/system.log`
+under the OS temp directory. This is silent and inert by default; opt-in previews
+may contain instruction text or paths.
 
 ---
 
@@ -81,8 +156,75 @@ falls back to its in-code default), so you only ever see them in an overrides fi
 | `graderTemperature` | `number` | `0` | Applied via the `chat.params` hook to grader sessions only. |
 | `minGraderTier` | `string \| null` | `null` | Optional floor for the grader tier, independent of producer. `null` means no floor and is identical to omitting the key. |
 | `delegateTimeoutMs` | `integer ≥ 1` | `600000` (10 min) | Ceiling for **one** producer `session.prompt` turn in the `delegate` tool. Each ladder attempt gets its own budget. On expiry the child session is aborted and deleted, the attempt is recorded as failed with `producer failed: …`, and the ladder advances — the delegation never fabricates a pass. |
-| `graderTimeoutMs` | `integer ≥ 1` | `60000` (1 min) | Ceiling for **one** grader `session.prompt` turn. On expiry the grader session is aborted and deleted and verification fails closed; there is no "inconclusive, therefore accepted" path. |
-| `gateBudgetMs` | `integer ≥ 1` | `90000` (90 s) | Ceiling for the whole acceptance gate — deterministic checks plus the grader — for one attempt. On expiry any in-flight grader is aborted and the verdict is an honest `unmet`. |
+| `graderTimeoutMs` | `integer ≥ 1` | tier-dependent | Explicit override wins over grader-tier defaults: fast `60000`, medium `180000`, heavy/custom `600000` ms, defined in `GRADER_TIMEOUT_MS_BY_TIER` in `src/verify/timeout.ts`. Timeout produces `unverifiable`; the grader is aborted and deleted. |
+| `gateBudgetMs` | `integer ≥ 1` | `90000` (90 s) | Separate whole-gate ceiling for one delegate attempt. Expiry aborts that invocation's graders and produces `unverifiable`, not producer failure. Raise this too if a medium/heavy grader should use its full tier timeout. |
+| `strictUnverifiable` | `boolean` | `false` | Restores the former fail-closed rejection for unavailable verification. It does not buy producer retries or tier escalations. |
+| `testBaseline` | `boolean` | `true` | Capture conservative test baselines in the live working directory at dispatch, asynchronously. Set `false` to disable capture **and consumption**; `testsPass` then reports `unverifiable`, not a producer failure. Does not disable changed-file snapshots for grading. |
+| `baselineTimeoutMs` | `integer ≥ 1` | `60000` (60 s) | Independent ceiling for each dispatch fingerprint and baseline capture (test run plus closing fingerprint). Expiry discards the baseline and aborts its process. Neither is awaited before producer dispatch. |
+
+Verification has three outcomes: `pass` means checks ran successfully, `fail` means
+the work did not satisfy a performed check, and `unverifiable` carries the reason
+a check could not be performed. The gate accepts when there is no genuine failure,
+appending a **Verification caveats — NOT verified** list for every unavailable check;
+acceptance does not turn those checks into passes. Mixed failure/unavailable results
+still reject and may escalate. Strict mode rejects unavailable-only results without
+escalation. `run`, build and lint exit failures remain genuine failures. `testsPass`
+compares against a measured dispatch-time baseline instead of blaming the producer
+for every non-zero exit.
+
+### Test and changed-file baselines
+
+Both native `task` and plugin `delegate` start capture before producer execution.
+Read-only dispatches also warm the default test-command cache. Explicit `testsPass`
+commands use their own cache entries and the same command allowlist as verification.
+No repository is copied and tests run only in the live directory; suites can still
+have external side effects (ports, databases, services). Disable `testBaseline` for
+projects where background execution is inappropriate.
+
+The existing changed-file store owns a **per-plugin-instance, in-memory** cache,
+evicted by the same idle-TTL sweep as session state. Its key is canonical working
+directory, Git HEAD, SHA-256 of porcelain status plus binary working/index diffs
+and untracked file contents, and the exact test command. Dirty starting trees are
+allowed, explicitly recorded and compared only to the same fingerprint. A changed
+HEAD or uncommitted diff cannot reuse that entry. Delegate retries retain the
+original dispatch reference, so a failed attempt cannot become its own baseline.
+
+Capture is discarded if its closing fingerprint differs, an editing tool is
+observed for that directory during capture, execution times out, or fingerprinting
+is unavailable. An edit with unknown directory conservatively invalidates all
+in-flight captures. Edits are observed before and after tools, including patches.
+Shell/exec tools conservatively count as possible edits during capture, even when
+their command ultimately only reads; they are not added to the child's edit log.
+Submodule repositories are conservatively unavailable; ignored files and external
+environment changes are not fingerprinted. External edit-and-revert cycles between
+fingerprints are not observable unless editing-tool hooks report them.
+
+`testsPass` records exit code, opportunistic failing identities and test counts.
+Complete identity sets are compared by difference; only newly failing identities
+are named in a rejection. A formerly green suite becoming non-zero, or an increased
+failure count, rejects and can escalate. Equal non-zero exits or counts without
+complete identities cannot prove that failures are unchanged: they produce
+`unverifiable`, with the observed identities/count/exit for human judgment. Unknown
+runner output never throws. Missing, disabled, timed-out or contaminated baselines
+likewise produce `unverifiable` (accepted with a caveat unless strict mode is enabled).
+An accepted comparison against a pre-broken baseline means **“no worse than before,”
+not “the suite is green”**; the returned result includes that explicit verification note.
+
+For the LLM grader, the dispatch snapshot is a changed-path set. Grader input is
+the child's editing-tool paths union paths newly present in the current changed
+set, not the raw dirty tree. The prompt identifies other dirty files as predating
+dispatch and permits empty deltas for read-only tasks. Missing snapshots/current
+Git state get an explicit disclaimer and only the child edit log. This path-set
+delta cannot detect shell edits to an already-dirty path; editing-tool records
+cover that case when available. Concurrent work can add paths too: this is not
+exclusive attribution in a shared tree.
+
+Refused commands, grader dispatch exceptions/timeouts, gate-budget exhaustion, and
+relative file/schema paths without a resolvable working directory are unavailable.
+A path resolved against a declared directory or the project root but absent is still
+a failure. `buildPasses` honors explicit commands; otherwise it probes `package.json`
+for a build script, then root `tsconfig.json` for `npx tsc --noEmit`, else reports
+unavailable. No arbitrary `npm run build` is attempted when neither exists.
 
 > **Note:** `graderPolicy: "atLeastProducerTier"` ensures a cheap producer is never graded by an even cheaper model. A deterministic DoD check (shell command, test run, lint) skips the grader entirely.
 
@@ -204,7 +346,8 @@ Evaluated by `resolveEnforcementMode` on every dispatch.
 | `verify.minGraderTier` must be a string or `null`. |
 | `verify.graderTemperature` must be a number ≥ 0. |
 | `verify.requireExplicitDoD` must be a boolean. |
-| `verify.delegateTimeoutMs`, `verify.graderTimeoutMs` and `verify.gateBudgetMs` must each be an integer ≥ 1 (milliseconds). `0` and negatives are rejected, not read as "no timeout". |
+| `verify.delegateTimeoutMs`, `verify.graderTimeoutMs`, `verify.gateBudgetMs` and `verify.baselineTimeoutMs` must each be an integer ≥ 1 (milliseconds). `0` and negatives are rejected, not read as "no timeout". |
+| `verify.testBaseline` must be a boolean. |
 | `proportional.trivialBypass` must be a boolean. |
 | A tier's `effort` (when present) must be one of `low \| medium \| high \| xhigh \| max`. Error: `tiers.json: preset '<preset>' tier '<tier>': effort must be one of low, medium, high, xhigh, max`. |
 
@@ -263,6 +406,59 @@ Detection is by model *family*, not by provider prefix: `isClaudeModel` matches 
 
 Warnings are emitted once per distinct problem (keyed by tier and, where it matters, by
 the offending value), because agent registration re-runs on every `config` hook.
+
+### Known issue: the provider matrix covers `effort` only
+
+The matrix above describes what happens to the **generic** `effort` field. The two
+explicit provider-specific fields are **not** gated by model family:
+`buildAgentOptions` emits `budget_tokens` whenever `thinking.budgetTokens` is truthy,
+and `reasoning_effort` / `reasoning_summary` whenever the matching `reasoning.*` field
+is set, without ever consulting `isClaudeModel` or `isOpenAIModel`
+(`src/router/agent-options.ts`). Only the `effort` branch checks the family.
+
+Two consequences, both reachable from a valid `tiers.json`:
+
+| Configuration | What is registered | Result |
+|---|---|---|
+| `thinking.budgetTokens` on a non-Anthropic tier | `options.budget_tokens` | Sent to a provider that has no such parameter. |
+| `reasoning.effort` / `reasoning.summary` on an Anthropic tier | `options.reasoning_effort` / `options.reasoning_summary` | Sent to a provider that has no such parameter. |
+
+The second one is the sharp edge, because of a **newer upstream constraint**. Anthropic's
+`claude-opus-5-5` has adaptive thinking always on and **rejects a manually supplied
+thinking budget with HTTP 400**; `{"type": "disabled"}` is rejected the same way. Effort
+on that model is expressed through `effort` / `output_config.effort`, never through a
+token budget. The bundled `anthropic` preset already points `@medium` at
+`anthropic/claude-opus-5-5`, so a tier written as:
+
+```jsonc
+{
+  "presets": {
+    "anthropic": {
+      "medium": {
+        "model": "anthropic/claude-opus-5-5",
+        "thinking": { "budgetTokens": 32000 }
+      }
+    }
+  }
+}
+```
+
+registers `budget_tokens` and every dispatch on that tier fails with a 400 — and,
+because `thinking.budgetTokens` outranks `effort` in the precedence list above, a tier
+that sets both silently loses the `effort` that *would* have worked.
+
+The same applies to any other Anthropic model whose catalogue entry carries
+`rejects_disabled_thinking`: today `claude-opus-5-5`, `claude-fable-5`,
+`claude-fable-5-1` and `claude-mythos-5-1`.
+
+**Guidance until this is gated:** on Anthropic tiers use `effort`, not
+`thinking.budgetTokens`. Reserve `thinking.budgetTokens` for older Anthropic models that
+still accept an explicit budget, and reserve `reasoning.*` for OpenAI tiers.
+
+A fix would gate both explicit branches by family, symmetrically with the `effort`
+branch, and warn rather than register when a tier names a field its provider cannot
+accept. That is a behaviour change to `buildAgentOptions`, so it moves golden snapshots
+for any preset that exercises it.
 
 ---
 
@@ -500,7 +696,8 @@ pins this: it resolves the real policies from the shipped file and from the same
 | `verify.graderTemperature` | `0` | `src/index.ts` (`chat.params` hook, grader sessions only) |
 | `verify.requireExplicitDoD` | `false` | `src/router/protocol.ts` |
 | `verify.delegateTimeoutMs` | `600000` | `src/index.ts` (`delegate` producer prompt) |
-| `verify.graderTimeoutMs` | `60000` | `src/verify/wiring.ts` (`dispatchGrader`) |
+| `verify.graderTimeoutMs` | fast `60000` / medium `180000` / heavy/custom `600000` | `src/verify/timeout.ts` (`graderTimeoutMs`), consumed by `dispatchGrader` |
+| `verify.strictUnverifiable` | `false` | `src/verify/gate.ts` |
 | `verify.gateBudgetMs` | `90000` | `src/index.ts` (`accept()` call in `delegate`) |
 | `escalate.ladder` | `["fast","medium","heavy"]` | `src/escalate/ladder.ts` |
 | `escalate.floorTier` | `null` | `src/escalate/ladder.ts` |

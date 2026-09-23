@@ -9,7 +9,8 @@
  * so there is exactly ONE accept/verify code path (GA-5).
  *
  * Design invariants:
- *  - FAIL-CLOSED: a verification error never yields acceptance.
+ *  - The former "FAIL-CLOSED: a verification error never yields acceptance"
+ *    policy is available via strictUnverifiable; default acceptance has caveats.
  *  - NEVER silently accept a non-trivial delegation that has no checkable DoD.
  *  - producer != grader and grader >= producer are enforced inside runChecker;
  *    the gate never grades anything itself.
@@ -27,6 +28,7 @@ import { resolveBaseDir } from "./paths";
 
 /** The concrete, inspectable result of a delegation (artefact contract §3.3). */
 export interface Artefact {
+  changeBaseline?: "available" | "unavailable";
   changedFiles: { path: string; status: string }[];
   finalReturnText: string;
   declaredOutputs: string[];
@@ -59,6 +61,7 @@ export interface GateDeps {
    * checkable and apply the no-DoD policy otherwise.
    */
   require?: "never" | "whenDoDPresent" | "always";
+  strictUnverifiable?: boolean;
 }
 
 export interface GateResult {
@@ -68,18 +71,40 @@ export interface GateResult {
   dodSource: DoD["source"];
 }
 
+export function gateResult(verdict: Verdict, dodSource: DoD["source"], strictUnverifiable = false): GateResult {
+  const outcome = verdict.outcome ?? (verdict.pass ? "pass" : "fail");
+  const caveats = verdict.caveats ?? (outcome === "unverifiable" ? verdict.reasons : []);
+  return {
+    accepted: outcome !== "fail" && !(strictUnverifiable && caveats.length > 0),
+    verdict: { ...verdict, outcome, ...(caveats.length ? { caveats } : {}) },
+    dodSource,
+  };
+}
+
+export function unverifiableGateResult(reason: string, dodSource: DoD["source"], strictUnverifiable = false, completedFailures: string[] = []): GateResult {
+  // An outer timeout must never erase a genuine failure already observed.
+  return gateResult({
+    pass: false,
+    outcome: completedFailures.length ? "fail" : "unverifiable",
+    method: "none",
+    reasons: [...completedFailures, reason],
+    caveats: [reason],
+  }, dodSource, strictUnverifiable);
+}
+
 function view(artefact: Artefact): ArtefactView {
   return {
     finalReturnText: artefact.finalReturnText,
     changedFiles: artefact.changedFiles,
+    changeBaseline: artefact.changeBaseline,
     declaredOutputs: artefact.declaredOutputs,
   };
 }
 
 /**
  * Decide whether a delegation's artefact meets its DoD.
- * Returns { accepted, verdict, dodSource }; accepted is true ONLY when a
- * verifier returned pass===true (or the gate is explicitly disabled).
+ * Returns acceptance separately from successful verification: unavailable
+ * checks carry caveats and reject only under strictUnverifiable.
  */
 export async function accept(
   delegation: Delegation,
@@ -149,11 +174,8 @@ export async function accept(
   // Checkable DoD: dispatch on the normalized kind. normalizeDoD() guarantees
   // a checkable DoD is "deterministic" (when any checks exist) or "checker"
   // (criteria only), which realises verify.preferDeterministic at
-  // DoD-construction time. Both verifiers are contractually FAIL-CLOSED: they
-  // catch their own errors and return a non-passing Verdict, never throwing.
-  // The two wirings (Option i verify-dispatch / Option ii delegate tool) still
-  // wrap accept() defensively so that any unexpected throw surfaces as a
-  // visible failure (forcing note / honest status), never a silent accept.
+  // DoD-construction time. Verifier limitations are distinct from failed checks;
+  // the gate applies strictUnverifiable centrally, without fabricating a pass.
   // A delegation that declared a working directory must be verified against
   // THAT directory, not the router's. Both verifiers get the same effective
   // base dir so a deterministic check and a grader can never disagree about
@@ -186,5 +208,5 @@ export async function accept(
     );
   }
 
-  return { accepted: verdict.pass === true, verdict, dodSource };
+  return gateResult(verdict, dodSource, deps.strictUnverifiable);
 }

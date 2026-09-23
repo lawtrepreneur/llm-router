@@ -15,6 +15,7 @@ import { scrubText } from "../guard/scrub";
 export interface ArtefactView {
   finalReturnText: string;
   changedFiles: { path: string; status: string }[];
+  changeBaseline?: "available" | "unavailable";
   declaredOutputs: string[];
 }
 
@@ -131,6 +132,9 @@ export function buildGradingPrompt(input: CheckerInput): { system: string; promp
   lines.push(scrubText(input.artefact.finalReturnText) || "(empty)");
 
   lines.push("");
+  lines.push(input.artefact.changeBaseline === "available"
+    ? "Producer delta only: child editing-tool paths union newly changed paths since dispatch. Files outside this delta predate the dispatch and are not the producer's work. An empty delta is valid for a read-only task; require edits only if an acceptance criterion requires them."
+    : "Dispatch-time changed-file snapshot unavailable (or current tree unavailable). Listed files are child editing-tool observations only, NOT an unqualified dirty tree. Do not attribute other dirty files to the producer or infer failure from an empty edit log for a read-only task.");
   lines.push("### Changed files");
   if (input.artefact.changedFiles.length > 0) {
     for (const f of input.artefact.changedFiles) {
@@ -231,6 +235,7 @@ export async function runChecker(input: CheckerInput, deps: CheckerDeps): Promis
   } catch (err) {
     return {
       pass: false,
+      outcome: "unverifiable",
       method: "checker",
       reasons: [scrubText("grader dispatch failed: " + String(err))],
     };
@@ -263,6 +268,7 @@ export async function runChecker(input: CheckerInput, deps: CheckerDeps): Promis
   // 7. Return verdict
   return {
     pass: parsed.pass === true,
+    outcome: parsed.pass ? "pass" : "fail",
     method: "checker",
     reasons: parsed.reasons.map(scrubText),
     evidence: scrubText("grader=" + graderTier),
