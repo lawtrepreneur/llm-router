@@ -106,9 +106,23 @@ persona can therefore tell a delegate to delegate work through Task, or obey a
 dispatch's REQUIRED TOOLS whitelist, even though that delegate has no task tool.
 The default removes that conflict while retaining project-local coding conventions.
 Paths are compared case- and separator-insensitively with a directory boundary;
-`project-other` is not inside `project`. Blocks begin at an `Instructions from:`
-marker line and extend to the next marker or the end of the entry. Text before
-the first marker and retained local sections are preserved.
+`project-other` is not inside `project`.
+
+Removal is bounded by the instruction file itself. opencode joins the agent prompt,
+every instruction file and any trailing system text (such as MCP server
+instructions) into one string, so the end of the last block cannot be inferred
+from the prompt. For each block to remove, the router reads the absolute path
+named on its `Instructions from:` line and removes exactly that marker line plus
+the file's contents, provided they are an exact prefix of the text following the
+marker (line-ending and trailing-whitespace differences are tolerated). Anything
+after the file's contents is kept, and a following marker still caps a block.
+File reads are cached per path and revalidated against the modification time.
+
+When in doubt, the block stays. If the file cannot be read, or its current
+contents do not match the prompt (for example, it was edited after the session
+started), the whole block is left untouched. A leftover instruction is
+unhelpful; deleting an unknown span of the system prompt is not recoverable.
+Text before the first marker and retained local sections are preserved.
 
 For layout diagnostics, set `MODEL_ROUTER_SYSTEM_DEBUG=1`. On the first child
 transform per plugin instance, the router appends the original entry count and

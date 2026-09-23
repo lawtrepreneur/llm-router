@@ -359,15 +359,28 @@ describe("child session lifecycle", () => {
     it.each([true, false])("filters global instructions only for children (child=%s)", async (child) => {
       const h = makeHarness({ parentID: child ? ORCHESTRATOR_SID : undefined });
       const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
-      const global = "Instructions from: C:\\Users\\user\\CLAUDE.md\nOrchestrate";
-      const output = { system: ["provider", global] };
-      await hooks["experimental.chat.system.transform"]!({ sessionID: "instructions", model }, output);
-      if (child) {
-        expect(output.system).toEqual(["provider"]);
-      } else {
-        expect(output.system).toHaveLength(3);
-        expect(output.system.slice(0, 2)).toEqual(["provider", global]);
-        expect(output.system[2]).toContain("fast");
+      // Removal is bounded by the named file's contents, so the fixture must exist on disk.
+      const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const root = join(tmpdir(), "opencode");
+      mkdirSync(root, { recursive: true });
+      const dir = mkdtempSync(join(root, "lifecycle-"));
+      try {
+        const file = join(dir, "CLAUDE.md");
+        writeFileSync(file, "Orchestrate");
+        const global = `Instructions from: ${file}\nOrchestrate`;
+        const output = { system: ["provider", global] };
+        await hooks["experimental.chat.system.transform"]!({ sessionID: "instructions", model }, output);
+        if (child) {
+          expect(output.system).toEqual(["provider"]);
+        } else {
+          expect(output.system).toHaveLength(3);
+          expect(output.system.slice(0, 2)).toEqual(["provider", global]);
+          expect(output.system[2]).toContain("fast");
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
     });
 

@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The delegate instruction filter introduced in 1.12.0 never removed anything in a live
+session, and the change that makes it take effect would, on its own, have deleted
+unrelated system-prompt text. Both are fixed together.
+
+### Fixed
+
+- **`delegateInstructions` stripping now reaches the request.** The filter ended with
+  `output.system = output.system.flatMap(...)`, which rebinds the hook's output
+  property. opencode keeps its own reference to the array it passes to
+  `experimental.chat.system.transform` and reads that reference back after the hook
+  returns, so every removal was computed and then discarded. Protocol injection had
+  always worked only because it used `push`, which mutates the same array. The
+  filter now writes its result back with `splice` over the original array and never
+  rebinds `output.system`. The 1.12.0 tests passed because they asserted on the
+  rebound property rather than on the array the host still holds.
+
+- **Removal is bounded to the instruction file's own text.** A block was defined as
+  running from its `Instructions from:` marker to the next marker or the end of the
+  entry, which was correct only while each instruction file arrived as its own array
+  element. The runtime joins the agent prompt, every instruction file and any
+  trailing system text into one string, so the last block extended to the end of
+  everything: a reproduction with a trailing `<mcp_instructions>` block lost the whole
+  MCP section along with `CLAUDE.md`, shrinking the prompt from 839 to 465 characters.
+  The filter now reads the file named by the marker (cached per path and revalidated
+  against its modification time) and removes exactly the marker line plus the longest
+  rendering of the file's contents — as read, LF-to-CRLF, CRLF-to-LF, or any of those
+  with trailing whitespace trimmed — that is an exact prefix of the block, keeping
+  whatever follows. If the file cannot be read or does not match, the block is kept
+  whole: leaving an instruction in place is unhelpful, deleting an unknown span of
+  the system prompt is not recoverable. The reader is an optional fourth parameter
+  (`InstructionFileReader`), so tests exercise the logic without touching disk; the
+  plugin's call site is unchanged.
+
 ## [1.12.0] - 2026-09-23
 
 A subagent was refusing dispatched work outright — returning `ESCALATE: The Task tool
