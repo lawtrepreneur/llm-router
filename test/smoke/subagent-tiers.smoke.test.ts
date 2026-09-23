@@ -35,12 +35,13 @@ const AGENT = "SmokeScout";
 // if a preset refresh changes these, this test should fail and be updated,
 // because it is asserting the end-to-end mapping, not re-deriving it.
 //
-// Repaired: these had gone stale (they still claimed `claude-haiku-4-5` /
-// `claude-opus-4-8`, which predate a preset refresh) and were re-derived
-// from tiers.json's `anthropic` preset — fast is now claude-sonnet-5 with
-// no variant, heavy is claude-fable-5 with variant "max".
+// Repaired twice now, which is the cost of pinning: first from
+// `claude-haiku-4-5` / `claude-opus-4-8`, then from `claude-fable-5` when the
+// heavy tier moved to `claude-fable-5-1`. Re-derive from tiers.json only if
+// this keeps gating CI on a preset bump. Current `anthropic` preset: fast is
+// claude-sonnet-5 with no variant, heavy is claude-fable-5-1 with variant "max".
 const FAST_MODEL = { providerID: "anthropic", modelID: "claude-sonnet-5" };
-const HEAVY_MODEL = { providerID: "anthropic", modelID: "claude-fable-5" };
+const HEAVY_MODEL = { providerID: "anthropic", modelID: "claude-fable-5-1" };
 const HEAVY_VARIANT = "max";
 
 // Each case shells out to a real opencode. The first one also pays process
