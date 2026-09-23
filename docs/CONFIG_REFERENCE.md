@@ -29,17 +29,73 @@ gets any of them wrong.
 | `fallback` | `FallbackConfig` (optional) | `global` chains for the five shipped providers | Provider fallback chains, either `global` (keyed by provider) or `presets` (keyed by preset, then provider). Rendered into the protocol's `Chain:` line. A chain keyed by a provider the active preset never routes to is **dormant by design** and is not validated against the catalog — the shipped chains cover every provider, so on a single-provider install most of them are inert. A chain entry naming a preset that does not exist is still reported, since that is a config error whatever your providers are. |
 | `enforcement` | object (optional) | shipped explicitly at the previous defaults | The verification/acceptance layer. Documented in the rest of this file. |
 
-The next keys are **not in the bundled `tiers.json`** — they are override-only and opt-in.
+The next keys are **not in the bundled `tiers.json`** — they use in-code defaults and can be overridden.
 `validateConfig` accepts them wherever they appear, but absent means the feature is off (or
 falls back to its in-code default), so you only ever see them in an overrides file.
 
 | Key | Type | Default when absent | Notes |
 |---|---|---|---|
+| `delegateInstructions` | `"strip-global" \| "strip-all" \| "keep"` | `"strip-global"` | Instruction-file filtering for delegate sessions only; never changes the orchestrator. See below. |
+| `dispatchHeader` | `boolean` | `true` | Prepends mechanical guidance to tier-targeted `task` prompts. See below. |
 | `tierPromptsGoalOriented` | `Record<string, string>` | built-in goal-oriented prompts in `src/router/prompts.ts` | Goal-oriented twin of `tierPrompts`; an entry replaces the built-in for that tier. See [Prompt styles](#prompt-styles-promptstyle). |
 | `modelGenerations` | `{ strong?: string[] }` | `DEFAULT_STRONG_MODEL_PATTERNS` in `src/router/config.ts` | Shared model-ID substring pattern lists. `strong` drives `promptStyle: "auto"` resolution. |
 | `subagentTiers` | `Record<string, string>` | `{}` — no pre-existing agent is touched | Opt-in map of your own subagent names to tier names, repointing them at the active preset's model for that tier. Unknown tier names are skipped at resolve time rather than rejected. |
 | `antiNarration` | `boolean` | `false` | Adds the anti-narration clause to Claude tier prompts and enables the non-blocking narration detector. |
 | `experimental` | `{ verifiedDelegateTool?: boolean }` | `{}` — every experimental feature off | Opt-in features. `verifiedDelegateTool` exposes the independently-verified `delegate` tool, also settable via `MODEL_ROUTER_VERIFIED_DELEGATE=1`. |
+
+---
+
+## `dispatchHeader`
+
+Defaults to `true`; set `dispatchHeader: false` to restore pre-feature behaviour,
+where dispatch hygiene depended on the orchestrator writing it. Non-boolean values
+are rejected by `validateConfig`.
+
+The `task` before-hook prepends tier identity, the current project directory,
+tool-schema authority, empty-result/gitignore guidance, the read-only budget, and
+a zero-tool-call false-refusal notice. It accepts `subagent_type` or `subagentType`
+only when the tier belongs to the active preset. Other tools, missing or unknown
+tiers, non-string prompts, router bypass, and prompts already beginning with
+`[router] You are @` are unchanged. An absent or empty directory omits that paragraph.
+The cap follows `tierCaps[tier] ?? DEFAULT_TIER_CAPS[tier] ?? 5`.
+
+Measured using the pure builder's string length: **1,031 characters** for `@fast`,
+cap `8`, and cwd `D:\git\opencode-model-router`, including LF paragraph separators
+and no trailing newline. The dispatch adds a separate `\n\n---\n\n` separator.
+This does not change `assembleSystemPrompt` or its pinned snapshots.
+
+Diagnostic escape hatch: set `MODEL_ROUTER_DISPATCH_DEBUG=1` to append one JSON
+record per plugin instance to `opencode-model-router-trajectory/dispatch.log`
+under the OS temp directory, recording `headerApplied`, `tier`, and the resulting
+`promptLength` without prompt contents. It is silent by default and best-effort.
+**Propagation of the mutated before-hook args to the actual child session remains
+unverified**; the diagnostic proves hook application, not child receipt.
+
+---
+
+## `delegateInstructions`
+
+Controls instruction files injected by opencode into **delegate (child) sessions only**.
+The orchestrator's instruction files are never filtered.
+
+- `"strip-global"` (default): removes instruction files outside the project directory and keeps project-local files. If the project directory is undefined or empty, every instruction file is treated as global and removed.
+- `"strip-all"`: removes every injected instruction-file block.
+- `"keep"`: restores pre-feature behaviour, leaving all instruction files untouched.
+
+opencode injects instruction files into children too. A user's global orchestrator
+persona can therefore tell a delegate to delegate work through Task, or obey a
+dispatch's REQUIRED TOOLS whitelist, even though that delegate has no task tool.
+The default removes that conflict while retaining project-local coding conventions.
+Paths are compared case- and separator-insensitively with a directory boundary;
+`project-other` is not inside `project`. Blocks begin at an `Instructions from:`
+marker line and extend to the next marker or the end of the entry. Text before
+the first marker and retained local sections are preserved.
+
+For layout diagnostics, set `MODEL_ROUTER_SYSTEM_DEBUG=1`. On the first child
+transform per plugin instance, the router appends the original entry count and
+each entry's first 60 characters to `opencode-model-router-trajectory/system.log`
+under the OS temp directory. This is silent and inert by default; opt-in previews
+may contain instruction text or paths.
 
 ---
 

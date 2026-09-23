@@ -13,6 +13,8 @@ import {
 import type { RouterConfig, TierConfig, Preset, ModeConfig } from "./router/config";
 import { buildAgentOptions, warnAgentOptionsEffortOnce } from "./router/agent-options";
 import { selectTierPrompt, TOOL_AUTHORITY_CLAUSE } from "./router/prompts";
+import { stripDelegateInstructions } from "./router/instructions";
+import { buildDispatchHeader } from "./router/dispatch-header";
 import {
   buildTiersOutput,
   buildPresetList,
@@ -238,6 +240,8 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
 
   // Per-plugin-instance session store: owns subagentSessionIDs and subagentCapState.
   const sessionStore = createSessionStore();
+  let systemDebugLogged = false;
+  let dispatchDebugLogged = false;
 
   // Authoritative orchestrator-vs-child classification memo, keyed by sessionID.
   // true  = proven top-level (no parentID) -> inject the delegation protocol
@@ -871,6 +875,39 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     // -----------------------------------------------------------------------
     "tool.execute.before": async (input: any, output: any) => {
       if (bypassed) return;
+      // Dispatch hygiene is independent of subagent guard enforcement below.
+      // The plugin API declares generic args, not a task-specific argument shape.
+      try {
+        if (input?.tool === "task" && cfg.dispatchHeader !== false) {
+          const rawArgs: unknown = output?.args;
+          if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+            const args = rawArgs as Record<string, unknown>;
+            const tier = typeof args.subagent_type === "string"
+              ? args.subagent_type : args.subagentType;
+            if (
+              typeof tier === "string" &&
+              Object.prototype.hasOwnProperty.call(getActiveTiers(cfg), tier) &&
+              typeof args.prompt === "string" &&
+              !args.prompt.startsWith("[router] You are @")
+            ) {
+              const cap = cfg.tierCaps?.[tier] ?? DEFAULT_TIER_CAPS[tier] ?? 5;
+              const prompt = buildDispatchHeader({ tier, cap, projectDirectory: ctx.directory }) +
+                "\n\n---\n\n" + args.prompt;
+              args.prompt = prompt;
+              if (process.env.MODEL_ROUTER_DISPATCH_DEBUG === "1" && !dispatchDebugLogged) {
+                dispatchDebugLogged = true;
+                const dir = join(tmpdir(), "opencode-model-router-trajectory");
+                mkdirSync(dir, { recursive: true });
+                writeFileSync(join(dir, "dispatch.log"), JSON.stringify({
+                  headerApplied: true, tier, promptLength: prompt.length,
+                }) + "\n", { flag: "a" });
+              }
+            }
+          }
+        }
+      } catch {
+        // Best-effort: malformed args or debug I/O must never break a dispatch.
+      }
       const sid = input?.sessionID;
       if (!sid || !sessionStore.isSubagent(sid) || typeof input?.tool !== "string") {
         return;
@@ -1308,11 +1345,28 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
       // whereas the session.created event that feeds markChildSession may not
       // have arrived yet. A grader told to orchestrate stalls until its budget
       // expires.
-      if (graderSessions.has(sessionID)) return;
-      if (sessionStore.isSubagent(sessionID)) return;
-      // Not known to be a child yet — that may only mean session.created has not
-      // been delivered. Ask the backend once and cache the answer.
-      if (!(await resolveIsRootSession(sessionID))) return;
+      const isChild =
+        graderSessions.has(sessionID) ||
+        sessionStore.isSubagent(sessionID) ||
+        !(await resolveIsRootSession(sessionID));
+
+      if (isChild) {
+        if (process.env.MODEL_ROUTER_SYSTEM_DEBUG === "1" && !systemDebugLogged) {
+          systemDebugLogged = true;
+          try {
+            const dir = join(tmpdir(), "opencode-model-router-trajectory");
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, "system.log"), JSON.stringify({
+              length: output.system.length,
+              entries: output.system.map((entry: string) => entry.slice(0, 60)),
+            }) + "\n", { flag: "a" });
+          } catch {
+            // Best-effort opt-in diagnostics must never break a real session.
+          }
+        }
+        stripDelegateInstructions(output, cfg, ctx.directory);
+        return;
+      }
 
       // For Claude-backed orchestrators, prepend an adversarial opener that
       // revokes the cached "Claude Code explorer" priming for the routing

@@ -8,6 +8,7 @@ import ModelRouterPlugin from "../../src/index";
 import { invalidateConfigCache, loadConfig } from "../../src/router/config";
 import { getActiveTiers } from "../../src/router/protocol";
 import * as sessions from "../../src/router/sessions";
+import { buildDispatchHeader } from "../../src/router/dispatch-header";
 
 /**
  * Regression coverage for the child-session leak.
@@ -156,6 +157,63 @@ describe("child session lifecycle", () => {
     invalidateConfigCache();
   });
 
+  describe("task dispatch headers", () => {
+    it.each(["subagent_type", "subagentType"])("prepends using %s and is idempotent", async (field) => {
+      const cfg = loadConfig();
+      cfg.tierCaps = { ...cfg.tierCaps, fast: 11 };
+      const h = makeHarness();
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const output = { args: { [field]: "fast", prompt: "Do the work" } };
+      const call = { tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" };
+      await hooks["tool.execute.before"]!(call, output);
+      const expected = buildDispatchHeader({ tier: "fast", cap: 11, projectDirectory: process.cwd() }) + "\n\n---\n\nDo the work";
+      expect(output.args.prompt).toBe(expected);
+      await hooks["tool.execute.before"]!(call, output);
+      expect(output.args.prompt).toBe(expected);
+    });
+
+    it.each([
+      { tool: "read", args: { subagent_type: "fast", prompt: "original" } },
+      { tool: "task", args: { subagent_type: "unknown", prompt: "original" } },
+      { tool: "task", args: { prompt: "original" } },
+      { tool: "task", args: { subagent_type: "toString", prompt: "original" } },
+      { tool: "task", args: { subagent_type: "fast", prompt: 42 } },
+      { tool: "task", args: null },
+      { tool: "task", args: { subagent_type: "fast", prompt: "[router] You are @fast. Existing header" } },
+    ])("leaves unsupported or already-prefixed calls unchanged: %j", async ({ tool, args }) => {
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args };
+      const before = structuredClone(output);
+      await hooks["tool.execute.before"]!({ tool, sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      expect(output).toEqual(before);
+    });
+
+    it("can be disabled by config", async () => {
+      loadConfig().dispatchHeader = false;
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: "fast", prompt: "original" } };
+      await hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      expect(output.args.prompt).toBe("original");
+    });
+
+    it.each(["fast", "custom"])("resolves default cap for %s", async (tier) => {
+      const cfg = loadConfig();
+      cfg.tierCaps = undefined;
+      getActiveTiers(cfg).custom = { model: "test/model" };
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: tier, prompt: "original" } };
+      await hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output);
+      expect(output.args.prompt).toContain(`Read-only budget: ${sessions.DEFAULT_TIER_CAPS[tier] ?? 5} calls.`);
+    });
+
+    it("does not throw if dispatch args cannot be mutated", async () => {
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: Object.freeze({ subagent_type: "fast", prompt: "original" }) };
+      await expect(hooks["tool.execute.before"]!({ tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" }, output)).resolves.toBeUndefined();
+      expect(output.args.prompt).toBe("original");
+    });
+  });
+
   // -------------------------------------------------------------------------
   // parentID
   // -------------------------------------------------------------------------
@@ -199,6 +257,21 @@ describe("child session lifecycle", () => {
       await hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output);
 
       expect(output.system).toHaveLength(1);
+    });
+
+    it.each([true, false])("filters global instructions only for children (child=%s)", async (child) => {
+      const h = makeHarness({ parentID: child ? ORCHESTRATOR_SID : undefined });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const global = "Instructions from: C:\\Users\\user\\CLAUDE.md\nOrchestrate";
+      const output = { system: ["provider", global] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "instructions", model }, output);
+      if (child) {
+        expect(output.system).toEqual(["provider"]);
+      } else {
+        expect(output.system).toHaveLength(3);
+        expect(output.system.slice(0, 2)).toEqual(["provider", global]);
+        expect(output.system[2]).toContain("fast");
+      }
     });
 
     it.each([undefined, ORCHESTRATOR_SID])("looks up each session once (parentID=%s)", async (parentID) => {

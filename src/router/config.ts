@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseJsonc } from "./jsonc";
+import type { DelegateInstructionsPolicy } from "./instructions";
 
 /**
  * Filename of the optional user overrides file (global and project copies share
@@ -134,6 +135,21 @@ export interface EnforcementConfig {
 }
 
 export interface RouterConfig {
+  /**
+   * Prepend a short mechanical header to every task dispatch: tier identity,
+   * working directory, tool-schema authority, empty-results-are-results, the
+   * read-only budget, and the false-refusal notice. Defaults to true. Set false
+   * to restore the pre-feature behaviour where this guidance existed only if the
+   * orchestrator remembered to write it.
+   */
+  dispatchHeader?: boolean;
+  /**
+   * DELEGATE sessions only, never the orchestrator. `strip-global` (default)
+   * removes instruction files outside the project, where orchestrator personas
+   * normally live, and keeps project-local files. `strip-all` removes every
+   * instruction file; `keep` restores pre-feature behaviour.
+   */
+  delegateInstructions?: DelegateInstructionsPolicy;
   activePreset: string;
   activeMode?: string;
   presets: Record<string, Preset>;
@@ -474,6 +490,21 @@ function validateCoreKeys(obj: Record<string, unknown>): void {
   }
   if (obj.antiNarration !== undefined && typeof obj.antiNarration !== "boolean") {
     throw new Error("tiers.json: 'antiNarration' must be a boolean");
+  }
+}
+
+function validateDispatchHeader(obj: Record<string, unknown>): void {
+  if (obj.dispatchHeader !== undefined && typeof obj.dispatchHeader !== "boolean") {
+    throw new Error("tiers.json: 'dispatchHeader' must be a boolean");
+  }
+}
+
+function validateDelegateInstructions(obj: Record<string, unknown>): void {
+  if (obj.delegateInstructions === undefined) return;
+  if (!["strip-global", "strip-all", "keep"].some((policy) => policy === obj.delegateInstructions)) {
+    throw new Error(
+      "tiers.json: 'delegateInstructions' must be one of strip-global|strip-all|keep",
+    );
   }
 }
 
@@ -864,6 +895,8 @@ export function validateConfig(raw: unknown): RouterConfig {
   validateTaskPatterns(obj);
   validateSubagentTiers(obj);
   validateEnforcement(obj);
+  validateDelegateInstructions(obj);
+  validateDispatchHeader(obj);
 
   return raw as RouterConfig;
 }
