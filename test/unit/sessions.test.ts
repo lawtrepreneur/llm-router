@@ -290,6 +290,42 @@ describe("createSessionStore", () => {
 });
 
 describe("createSessionStore — markChildSession", () => {
+  it("still registers a tier after the session was marked as a child", () => {
+    const store = createSessionStore();
+    const sessionID = "ses_child_then_tier";
+    store.markChildSession(sessionID);
+    const r = store.registerFromChatMessage(
+      { agent: "fast", sessionID }, dispatch("read a.ts"), fullCfg, tierNames,
+    );
+    expect(r).toEqual({ registered: true, resumed: false });
+    expect(store.getTier(sessionID)).toBe("fast");
+  });
+
+  it("registers mapped agents with the resolved tier and cap", () => {
+    const store = createSessionStore();
+    const mappedCfg = { ...cfg, subagentTiers: { explore: "fast" } };
+    const input = { agent: "explore", sessionID: "mapped" };
+    expect(store.registerFromChatMessage(input, dispatch("work"), mappedCfg, tierNames))
+      .toEqual({ registered: true, resumed: false });
+    expect(store.getTier(input.sessionID)).toBe("fast");
+    expect(store.isSubagent(input.sessionID)).toBe(true);
+    const output = { output: "result" };
+    store.recordToolCall({ sessionID: input.sessionID, tool: "read", args: {} }, output);
+    expect(output.output).toContain("[cap: 1/8]");
+    expect(store.registerFromChatMessage(input, dispatch("work"), mappedCfg, tierNames))
+      .toEqual({ registered: true, resumed: true });
+  });
+
+  it("does not register mappings to tiers absent from the active preset", () => {
+    const store = createSessionStore();
+    expect(store.registerFromChatMessage(
+      { agent: "explore", sessionID: "invalid" }, dispatch("work"),
+      { ...cfg, subagentTiers: { explore: "nonexistent-tier" } }, tierNames,
+    )).toEqual({ registered: false, resumed: false });
+    expect(store.getTier("invalid")).toBeNull();
+    expect(store.isSubagent("invalid")).toBe(false);
+  });
+
   it("marks a child as a subagent", () => {
     const store = createSessionStore();
     store.markChildSession("ses_child");

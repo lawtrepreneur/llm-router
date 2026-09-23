@@ -230,6 +230,7 @@ function warnSessionLookupFailedOnce(): void {
 }
 
 const SESSION_ROOT_MEMO_MAX = 500;
+const SESSION_LOOKUP_RETRY_MS = 30_000;
 
 const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   let cfg = loadConfig();
@@ -251,6 +252,8 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   // synchronous path at all. One session.get per session closes that race
   // without depending on event ordering.
   const sessionRootMemo = new Map<string, boolean>();
+  /** Recent lookup failures throttle retries without permanently memoising root. */
+  const sessionLookupFailedAt = new Map<string, number>();
 
   /**
    * Resolve whether a session is the top-level orchestrator, authoritatively.
@@ -267,9 +270,20 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
    */
   const resolveIsRootSession = async (sessionID: string): Promise<boolean> => {
     const memo = sessionRootMemo.get(sessionID);
-    if (memo !== undefined) return memo;
+    if (memo !== undefined) {
+      if (!memo) sessionStore.markChildSession(sessionID);
+      return memo;
+    }
+    const failedAt = sessionLookupFailedAt.get(sessionID);
+    if (failedAt !== undefined && Date.now() - failedAt < SESSION_LOOKUP_RETRY_MS) {
+      return true;
+    }
     try {
       const res = await ctx.client.session.get({ path: { id: sessionID } });
+      if (!res || (res as { error?: unknown }).error || !res.data) {
+        throw new Error("session.get returned no session data");
+      }
+      sessionLookupFailedAt.delete(sessionID);
       const parentID = res?.data?.parentID;
       const isRoot = !(typeof parentID === "string" && parentID !== "");
       sessionRootMemo.set(sessionID, isRoot);
@@ -281,6 +295,12 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
       if (!isRoot) sessionStore.markChildSession(sessionID);
       return isRoot;
     } catch {
+      sessionLookupFailedAt.set(sessionID, Date.now());
+      while (sessionLookupFailedAt.size > SESSION_ROOT_MEMO_MAX) {
+        const oldest = sessionLookupFailedAt.keys().next().value;
+        if (oldest === undefined) break;
+        sessionLookupFailedAt.delete(oldest);
+      }
       warnSessionLookupFailedOnce();
       return true;
     }
@@ -1039,6 +1059,19 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     // never throws into the session or emits model-visible debug output.
     // -----------------------------------------------------------------------
     event: async ({ event }: any) => {
+      if (event?.type === "session.deleted") {
+        try {
+          const id = event?.properties?.info?.id;
+          if (typeof id === "string") {
+            sessionRootMemo.delete(id);
+            sessionLookupFailedAt.delete(id);
+            sessionStore.unregister(id);
+          }
+        } catch {
+          // best-effort: cleanup must never crash a real session
+        }
+        return;
+      }
       // Child-session classification. opencode reports every child session with
       // a parentID, which is the only agent-name-INDEPENDENT signal available:
       // registerFromChatMessage recognises a session only when its agent name is
@@ -1136,6 +1169,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
           mode: "subagent",
           description: tier.description ?? `@${name} tier (${tier.model})`,
           maxSteps: tier.steps,
+          steps: tier.steps,
           prompt: finalPrompt,
           color: tier.color,
         };

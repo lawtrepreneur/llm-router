@@ -464,13 +464,18 @@ export function createSessionStore(options: SessionStoreOptions = {}) {
       cfg: RouterConfig,
       tierNames: string[],
     ): RegisterResult {
-      if (!input.agent || !tierNames.includes(input.agent)) {
+      if (!input.agent) return { registered: false, resumed: false };
+      // Tier names map to themselves; pre-existing agents use subagentTiers.
+      // resolveSubagentOverrides skips tier-name collisions, keeping these disjoint.
+      const tierName = tierNames.includes(input.agent)
+        ? input.agent
+        : cfg.subagentTiers?.[input.agent];
+      if (!tierName || !tierNames.includes(tierName)) {
         return { registered: false, resumed: false };
       }
 
       subagentSessionIDs.add(input.sessionID);
 
-      const tierName = input.agent;
       const dispatchText = extractDispatchText(output);
       // CAP:none is honored only when the dispatch carries a justification
       // (a `reason:` line). An unjustified CAP:none falls back to the tier

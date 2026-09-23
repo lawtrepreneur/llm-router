@@ -5,7 +5,8 @@ import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ModelRouterPlugin from "../../src/index";
-import { invalidateConfigCache } from "../../src/router/config";
+import { invalidateConfigCache, loadConfig } from "../../src/router/config";
+import { getActiveTiers } from "../../src/router/protocol";
 import * as sessions from "../../src/router/sessions";
 
 /**
@@ -39,6 +40,7 @@ function makeHarness(opts: {
   producerPromptRejects?: boolean;
   parentID?: string;
   sessionGetRejects?: boolean;
+  sessionGetError?: boolean;
 } = {}): Harness {
   const createdIDs: string[] = [];
   const createOptions: any[] = [];
@@ -48,6 +50,7 @@ function makeHarness(opts: {
   let counter = 0;
   const getSession = vi.fn(async () => {
     if (opts.sessionGetRejects) throw new Error("session lookup failure");
+    if (opts.sessionGetError) return { data: undefined, error: { message: "not found" } };
     return { data: { parentID: opts.parentID } };
   });
 
@@ -209,17 +212,95 @@ describe("child session lifecycle", () => {
       expect(h.getSession).toHaveBeenCalledTimes(1);
     });
 
-    it("assumes root on rejection without caching the failure", async () => {
+    it.each(["rejection", "error response"])("throttles %s for 30s, then recovers without memoising root", async (failure) => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
-      const h = makeHarness({ sessionGetRejects: true });
+      let now = 0;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const store = sessions.createSessionStore();
+      vi.spyOn(sessions, "createSessionStore").mockReturnValue(store);
+      const opts = { sessionGetRejects: failure === "rejection", sessionGetError: failure === "error response", parentID: ORCHESTRATOR_SID };
+      const h = makeHarness(opts);
       const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
       for (let i = 0; i < 2; i++) {
+        now = i * 29_999;
         const output = { system: [] as string[] };
         await expect(hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output)).resolves.toBeUndefined();
         expect(output.system).toHaveLength(1);
+        expect(store.isSubagent("root")).toBe(false);
       }
+      expect(h.getSession).toHaveBeenCalledTimes(1);
+      opts.sessionGetRejects = false;
+      opts.sessionGetError = false;
+      now = 30_000;
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output);
+      expect(output.system).toEqual([]);
+      expect(store.isSubagent("root")).toBe(true);
       expect(h.getSession).toHaveBeenCalledTimes(2);
     });
+
+    it("re-marks a memoised child after idle eviction", async () => {
+      const store = sessions.createSessionStore();
+      vi.spyOn(sessions, "createSessionStore").mockReturnValue(store);
+      const h = makeHarness({ parentID: ORCHESTRATOR_SID });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "child", model }, { system: [] });
+      store.sweep(Date.now(), 0);
+      expect(store.isSubagent("child")).toBe(false);
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "child", model }, output);
+      expect(store.isSubagent("child")).toBe(true);
+      expect(output.system).toEqual([]);
+      expect(h.getSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([false, true])("evicts deleted session memo, failure stamp and store (failed=%s)", async (sessionGetError) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const store = sessions.createSessionStore();
+      vi.spyOn(sessions, "createSessionStore").mockReturnValue(store);
+      const opts = { sessionGetError, parentID: undefined as string | undefined };
+      const h = makeHarness(opts);
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "deleted", model }, { system: [] });
+      store.registerProducerSession("deleted", "fast", loadConfig());
+      // The SDK declares properties.info: Session; only id is consumed here.
+      const eventHook = hooks.event as (input: { event: { type: "session.deleted"; properties: { info: { id: string } } } }) => Promise<void>;
+      await eventHook({ event: { type: "session.deleted", properties: { info: { id: "deleted" } } } });
+      expect(store.isSubagent("deleted")).toBe(false);
+      expect(store.getTier("deleted")).toBeNull();
+      opts.sessionGetError = false;
+      opts.parentID = ORCHESTRATOR_SID;
+      const output = { system: [] as string[] };
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "deleted", model }, output);
+      expect(output.system).toEqual([]);
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("bounds failed lookups to 500 sessions with oldest-first eviction", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.spyOn(Date, "now").mockReturnValue(0);
+      const h = makeHarness({ sessionGetError: true });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const transform = hooks["experimental.chat.system.transform"]!;
+      for (let i = 0; i <= 500; i++) {
+        await transform({ sessionID: `failed-${i}`, model }, { system: [] });
+      }
+      await transform({ sessionID: "failed-1", model }, { system: [] });
+      expect(h.getSession).toHaveBeenCalledTimes(501);
+      await transform({ sessionID: "failed-0", model }, { system: [] });
+      expect(h.getSession).toHaveBeenCalledTimes(502);
+    });
+  });
+
+  it("emits both steps and legacy maxSteps for every tier agent", async () => {
+    const h = makeHarness();
+    const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+    const config: { agent: Record<string, { steps?: number; maxSteps?: number }> } = { agent: {} };
+    await hooks.config!(config);
+    for (const [name, tier] of Object.entries(getActiveTiers(loadConfig()))) {
+      expect(config.agent[name]).toHaveProperty("steps", tier.steps);
+      expect(config.agent[name]).toHaveProperty("maxSteps", tier.steps);
+    }
   });
 
   it("creates every child session with the orchestrator as parentID", async () => {
