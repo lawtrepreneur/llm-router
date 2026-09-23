@@ -5,6 +5,122 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+A subagent was refusing dispatched work outright — returning `ESCALATE: The Task tool
+is not available in this session` or `the available tools here are not the
+Read/Grep/Glob/Bash tools described in the request` — without making a single tool
+call. This release is about the several independent causes behind that, and about an
+acceptance gate that was rejecting work for its own inability to check it.
+
+### Fixed
+
+- **The orchestrator delegation protocol no longer leaks into subagent sessions.**
+  Classification was an allowlist of tier names: `if (!input.agent ||
+  !tierNames.includes(input.agent))`. So `general`, `explore`, every
+  markdown-defined agent and — by construction — every agent mapped through
+  `subagentTiers` was never recognised as a child, because
+  `resolveSubagentOverrides` deliberately skips any name that collides with a tier.
+  The two features were mutually exclusive. Unrecognised children were then told
+  `You are the orchestrator: route each task to the right tier and delegate it with
+  Task(...)`, which is a MANDATORY instruction they have no tool to satisfy, and a
+  literal-minded model refuses the dispatch rather than improvising. Children are now
+  classified by `parentID`, from the `session.created` event with a memoised
+  `session.get` fallback — the code comment had claimed this mechanism for some time,
+  but the only event handler began `if (event?.type !== "session.idle") return;` and
+  no `session.created` branch existed. Grader sessions are excluded too; they are
+  created synchronously and would otherwise stall until their budget expired. The
+  guard also now fails closed: a transform with no session id no longer injects.
+
+- **Tier prompts no longer assert a missing capability.** All six shipped prompts
+  ended their opening paragraph with `You have no Task tool and cannot sub-delegate.`
+  The statement is true — the runtime denies `task` to children on its own — but
+  training a hand-back reflex next to orchestrator text demanding delegation is what
+  produced `I cannot invoke a medium subagent… dispatch it from the orchestrator`.
+  The sentence is replaced with `You execute this dispatch yourself and do not
+  re-delegate it`, and a provider-neutral tool-authority clause is appended once at
+  agent assembly: your own schema is authoritative, tool names in a dispatch are
+  descriptive and vary by provider, an empty search result is a result, and refusing
+  because a named tool looks unavailable is not an acceptable answer. This matters
+  most in a mixed-family setup, where a dispatch written in one vendor's tool
+  vocabulary reads to another vendor's model as a list of tools it does not have.
+
+- **Reading a different region of an already-opened file is no longer flagged as
+  redundant.** The read fingerprint was the path alone, so lines 400–600 of a file
+  whose first 200 lines had been read collided with the earlier call and produced
+  `[⚠ REDUNDANT]`. Combined with prompts that said to stop immediately on that
+  marker, it halted legitimate work. The fingerprint now includes any range
+  arguments; a read with no range keeps its previous fingerprint exactly, so no
+  banner output moved. The prompts now say the marker means stop repeating ground you
+  already covered, and that a different region is not a repeat.
+
+- **The announced read-only budget is the one actually charged.** The dispatch header
+  resolved the cap from `tierCaps`, while enforcement resolved it from the dispatch's
+  own `CAP:` directive and the `reason:` justification rule, so the header could
+  announce a budget the guard would not honour. Both sides now read the same
+  directive through the same parser, and a test pins their equality so neither can
+  drift alone.
+
+- **Subagent-tier mappings now carry a tier.** An agent listed in `subagentTiers` was
+  correctly excluded from protocol injection but remained untiered, which silently
+  disabled its caps, verification and escalation. It now resolves to its mapped tier.
+  Alongside it: a non-2xx `session.get` is no longer cached as "root" (the generated
+  client resolves rather than throws, so the error object was read as an absent
+  `parentID`), failed lookups are retried after 30s instead of every step, and
+  `session.deleted` evicts the classification state.
+
+### Added
+
+- **Orchestrator instruction files are stripped from delegate sessions**
+  (`delegateInstructions`, default `strip-global`). opencode injects instruction
+  files — `AGENTS.md`, a global `CLAUDE.md` — into every session, children included.
+  A global orchestrator persona therefore reached every delegate telling it to fire
+  a `fast` agent via `Task` for any read-only work, and to treat a dispatch's
+  `REQUIRED TOOLS` list as a whitelist. Project-local files are kept by default
+  because they usually carry conventions the delegate needs; `strip-all` removes
+  every instruction file, `keep` restores the previous behaviour.
+
+- **A mechanical dispatch header on every tier dispatch** (`dispatchHeader`, default
+  on). Roughly 260 tokens stating the tier identity, that the delegate executes the
+  work itself, the working directory and that it is already there, that tool names
+  are descriptive rather than restrictive, that empty results are results and
+  `.gitignore` filtering is not a broken tool, and the resolved read budget with what
+  the runtime's banners mean. This is dispatch hygiene that previously had to be
+  retyped by hand into every prompt, which is exactly the kind of thing that stops
+  being done.
+
+- **Hand-backs made without trying are detected** (`falseRefusalDetection`, default
+  on). A child that returns `ESCALATE:` / `NEED MORE:` / `SCOPE GROWTH:` with a
+  capability complaint and **zero recorded tool calls** gets its result annotated for
+  the orchestrator: no tool call was observed, so the capability claim is untested
+  rather than demonstrated, and a tier escalation on that result is suppressed. The
+  detector requires all three signals together, so a genuine scope hand-back after
+  real work is untouched.
+
+- **A third verification outcome: `unverifiable`, distinct from a failed check**
+  (`enforcement.verify.strictUnverifiable`, default off). The gate was rejecting —
+  and the ladder escalating a tier on — its own inability to check: a command the
+  allowlist refused, `buildPasses` in a repo with no build script, a grader that
+  timed out, a path it could not resolve. None of those are evidence that the
+  producer failed. They are now reported as caveats on an accepted result, which
+  never claims the check passed; `strictUnverifiable` restores rejection, but
+  terminates the ladder instead of escalating. Grader timeouts also scale with tier
+  (60s / 180s / 600s) rather than a flat 60s a thinking model cannot meet.
+
+- **`testsPass` is judged against a measured baseline** (`enforcement.verify.testBaseline`,
+  default on; `baselineTimeoutMs`, default 60s). A suite with pre-existing unrelated
+  failures made every delegation unacceptable. A dispatch-time baseline is now
+  captured out of band, keyed by working directory, `HEAD`, a working-tree
+  fingerprint and the exact test command, and cached across dispatches. It is
+  discarded the moment it could have been contaminated by the producer's own edits,
+  because a contaminated baseline errs in the dangerous direction: a newly introduced
+  failure would appear in both runs and be excused. Equal failure counts or equal
+  non-zero exit codes do not prove the identities are unchanged, so they yield
+  `unverifiable` rather than a pass. A green baseline followed by a failure still
+  rejects. The grader is also handed the producer's own change delta instead of an
+  unqualified dirty tree, so it stops reporting "no files were modified" against
+  changes that predate the dispatch.
+
 ## [1.11.1] - 2026-08-24
 
 ### Added
