@@ -199,6 +199,8 @@ export function buildForcingNote(
 }
 
 /** Suffix appended to an accepted delegate-tool result. */
-export function buildAcceptedSuffix(method: string): string {
-  return `\n\n[router \u2713 accepted: ${method}]`;
+export function buildAcceptedSuffix(method: string, caveats: string[] = []): string {
+  return `\n\n[router \u2713 accepted: ${method}]` + (caveats.length
+    ? `\nVerification caveats — NOT verified (acceptance is not a passing check):\n${caveats.map(r => `- ${r}`).join("\n")}`
+    : "");
 }

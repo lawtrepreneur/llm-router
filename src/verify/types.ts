@@ -5,6 +5,10 @@ export type VerifyMethod = "deterministic" | "checker" | "none";
 
 export interface Verdict {
   pass: boolean;
+  /** Absent on legacy verdicts: derive from pass. Unverifiable is not failure. */
+  outcome?: "pass" | "fail" | "unverifiable";
+  /** Checks that could not be performed; never evidence of producer failure. */
+  caveats?: string[];
   method: VerifyMethod;
   reasons: string[];
   evidence?: string;
@@ -33,6 +37,8 @@ export interface MutexRegistry {
 }
 
 export interface DeterministicDeps {
+  /** Preserve completed failures if an outer gate budget expires later. */
+  onFailure?: (reason: string) => void;
   exec: ExecSeam;
   fs: FsSeam;
   cwd: string;

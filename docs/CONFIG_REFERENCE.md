@@ -156,8 +156,24 @@ may contain instruction text or paths.
 | `graderTemperature` | `number` | `0` | Applied via the `chat.params` hook to grader sessions only. |
 | `minGraderTier` | `string \| null` | `null` | Optional floor for the grader tier, independent of producer. `null` means no floor and is identical to omitting the key. |
 | `delegateTimeoutMs` | `integer ≥ 1` | `600000` (10 min) | Ceiling for **one** producer `session.prompt` turn in the `delegate` tool. Each ladder attempt gets its own budget. On expiry the child session is aborted and deleted, the attempt is recorded as failed with `producer failed: …`, and the ladder advances — the delegation never fabricates a pass. |
-| `graderTimeoutMs` | `integer ≥ 1` | `60000` (1 min) | Ceiling for **one** grader `session.prompt` turn. On expiry the grader session is aborted and deleted and verification fails closed; there is no "inconclusive, therefore accepted" path. |
-| `gateBudgetMs` | `integer ≥ 1` | `90000` (90 s) | Ceiling for the whole acceptance gate — deterministic checks plus the grader — for one attempt. On expiry any in-flight grader is aborted and the verdict is an honest `unmet`. |
+| `graderTimeoutMs` | `integer ≥ 1` | tier-dependent | Explicit override wins over grader-tier defaults: fast `60000`, medium `180000`, heavy/custom `600000` ms, defined in `GRADER_TIMEOUT_MS_BY_TIER` in `src/verify/timeout.ts`. Timeout produces `unverifiable`; the grader is aborted and deleted. |
+| `gateBudgetMs` | `integer ≥ 1` | `90000` (90 s) | Separate whole-gate ceiling for one delegate attempt. Expiry aborts that invocation's graders and produces `unverifiable`, not producer failure. Raise this too if a medium/heavy grader should use its full tier timeout. |
+| `strictUnverifiable` | `boolean` | `false` | Restores the former fail-closed rejection for unavailable verification. It does not buy producer retries or tier escalations. |
+
+Verification has three outcomes: `pass` means checks ran successfully, `fail` means
+the work did not satisfy a performed check, and `unverifiable` carries the reason
+a check could not be performed. The gate accepts when there is no genuine failure,
+appending a **Verification caveats — NOT verified** list for every unavailable check;
+acceptance does not turn those checks into passes. Mixed failure/unavailable results
+still reject and may escalate. Strict mode rejects unavailable-only results without
+escalation. Command exit failures remain genuine failures (no test-baseline exemption).
+
+Refused commands, grader dispatch exceptions/timeouts, gate-budget exhaustion, and
+relative file/schema paths without a resolvable working directory are unavailable.
+A path resolved against a declared directory or the project root but absent is still
+a failure. `buildPasses` honors explicit commands; otherwise it probes `package.json`
+for a build script, then root `tsconfig.json` for `npx tsc --noEmit`, else reports
+unavailable. No arbitrary `npm run build` is attempted when neither exists.
 
 > **Note:** `graderPolicy: "atLeastProducerTier"` ensures a cheap producer is never graded by an even cheaper model. A deterministic DoD check (shell command, test run, lint) skips the grader entirely.
 
@@ -628,7 +644,8 @@ pins this: it resolves the real policies from the shipped file and from the same
 | `verify.graderTemperature` | `0` | `src/index.ts` (`chat.params` hook, grader sessions only) |
 | `verify.requireExplicitDoD` | `false` | `src/router/protocol.ts` |
 | `verify.delegateTimeoutMs` | `600000` | `src/index.ts` (`delegate` producer prompt) |
-| `verify.graderTimeoutMs` | `60000` | `src/verify/wiring.ts` (`dispatchGrader`) |
+| `verify.graderTimeoutMs` | fast `60000` / medium `180000` / heavy/custom `600000` | `src/verify/timeout.ts` (`graderTimeoutMs`), consumed by `dispatchGrader` |
+| `verify.strictUnverifiable` | `false` | `src/verify/gate.ts` |
 | `verify.gateBudgetMs` | `90000` | `src/index.ts` (`accept()` call in `delegate`) |
 | `escalate.ladder` | `["fast","medium","heavy"]` | `src/escalate/ladder.ts` |
 | `escalate.floorTier` | `null` | `src/escalate/ladder.ts` |

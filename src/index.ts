@@ -75,7 +75,7 @@ import { exec as nodeExec } from "node:child_process";
 import { access, readFile as fsReadFile } from "node:fs/promises";
 import { tool } from "@opencode-ai/plugin";
 import { scrubText } from "./guard/scrub";
-import { accept } from "./verify/gate";
+import { accept, unverifiableGateResult } from "./verify/gate";
 import { createVerificationWiring, extractAssistantText } from "./verify/wiring";
 import {
   DEFAULT_DELEGATE_PROMPT_TIMEOUT_MS,
@@ -587,6 +587,9 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               );
               // Grader sessions opened by THIS accept() call, and only those.
               const gateGraderSessions = new Set<string>();
+              const completedFailures: string[] = [];
+              const gateDeps = buildGateDeps(toolCtx?.sessionID, gateGraderSessions);
+              gateDeps.deterministic.onFailure = reason => completedFailures.push(reason);
               let gateRes;
               try {
                 gateRes = producerError
@@ -608,15 +611,14 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                           ...(args.cwd ? { cwd: args.cwd } : {}),
                         },
                         artefact,
-                        buildGateDeps(toolCtx?.sessionID, gateGraderSessions),
+                        gateDeps,
                       ),
                       gateBudgetMs,
                       "verification gate",
                     );
               } catch (error) {
-                // A gate that ran out of budget is UNMET, never accepted: the
-                // one thing worse than a slow verifier is a fast fabricated
-                // pass. Abort any grader still in flight so the ceiling is a
+                // Budget exhaustion is unavailable verification, not producer
+                // failure. Abort any grader still in flight so the ceiling is a
                 // real cancellation and not just a stopped wait.
                 //
                 // Scoped to THIS gate invocation's graders. The wiring-global
@@ -634,19 +636,14 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                     }
                   }
                 }
-                gateRes = {
-                  accepted: false,
-                  verdict: {
-                    pass: false,
-                    method: "none" as const,
-                    reasons: [
-                      error instanceof RouterTimeoutError
-                        ? `verification gate timed out after ${gateBudgetMs}ms`
-                        : "verification failed (fail-closed)",
-                    ],
-                  },
-                  dodSource: dod.source,
-                };
+                gateRes = unverifiableGateResult(
+                  error instanceof RouterTimeoutError
+                    ? `verification gate timed out after ${gateBudgetMs}ms`
+                    : `verification unavailable: ${scrubText(String(error))}`,
+                  dod.source,
+                  activeCfg.enforcement?.verify?.strictUnverifiable,
+                  completedFailures,
+                );
               }
 
               // Per-attempt cleanup (drop producer session tracking + state).
@@ -693,7 +690,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
 
               const action = nextAction(
                 state,
-                { pass: gateRes.accepted, reasons: gateRes.verdict.reasons },
+                { pass: gateRes.accepted, outcome: gateRes.verdict.outcome, reasons: gateRes.verdict.reasons },
                 policy,
               );
 
@@ -704,7 +701,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   true,
                   gateRes.verdict.method,
                 );
-                return producerText + buildAcceptedSuffix(gateRes.verdict.method);
+                return producerText + buildAcceptedSuffix(gateRes.verdict.method, gateRes.verdict.caveats);
               }
               if (action.action === "give_up") {
                 dumpDelegateScorecard(
@@ -1068,12 +1065,15 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
             if (!res.accepted && !res.verdict.skipped) {
               const ladder = cfg.enforcement?.escalate?.ladder ?? ["fast", "medium", "heavy"];
               const li = ladder.indexOf(producerTier);
-              const nextTier = li >= 0 && li < ladder.length - 1 ? ladder[li + 1] : null;
+              const nextTier = res.verdict.outcome !== "unverifiable" && li >= 0 && li < ladder.length - 1 ? ladder[li + 1] : null;
               const note = scrubText(buildForcingNote(res.verdict.reasons, { producerTier, nextTier }));
               output.output =
                 typeof output.output === "string"
                   ? output.output + "\n\n" + note
                   : note;
+            }
+            if (res.accepted && res.verdict.caveats?.length) {
+              output.output += buildAcceptedSuffix(res.verdict.method, res.verdict.caveats);
             }
             if (childSessionID) changedFileStore.clear(childSessionID);
           } catch {

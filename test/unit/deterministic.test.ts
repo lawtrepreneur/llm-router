@@ -298,9 +298,10 @@ describe("runDeterministic — repo-command defaults", () => {
     expect(capturedCmd).toBe("npm test");
   });
 
-  it("buildPasses uses default 'npm run build' when command absent", async () => {
+  it("buildPasses uses 'npm run build' when a build script exists", async () => {
     let capturedCmd = "";
     const deps = makeDeps({
+      fs: { fileExists: async () => true, readFile: async () => '{"scripts":{"build":"tsc"}}' },
       exec: async (cmd, _opts) => { capturedCmd = cmd; return { code: 0, stdout: "", stderr: "" }; },
     });
     await runDeterministic(makeDoD([{ kind: "buildPasses" }]), deps);

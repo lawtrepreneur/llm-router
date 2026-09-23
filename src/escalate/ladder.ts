@@ -32,6 +32,7 @@ export interface LadderAction {
 
 export interface LadderVerdict {
   pass: boolean;
+  outcome?: "pass" | "fail" | "unverifiable";
   reasons?: string[];
 }
 
@@ -112,6 +113,11 @@ export function nextAction(
   // (1) pass
   if (verdict?.pass === true) {
     return { action: "accept" };
+  }
+  // Strict policy may reject an unavailable check, but paying another producer
+  // cannot repair the verifier. Only actual failures enter the retry ladder.
+  if (verdict?.outcome === "unverifiable") {
+    return { action: "give_up", reason: "verification unavailable; no producer escalation" };
   }
 
   // (2) cost check

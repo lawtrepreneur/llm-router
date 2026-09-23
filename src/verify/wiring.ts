@@ -19,8 +19,7 @@ import { isAbsolute, join } from "node:path";
 import { createMutexRegistry } from "./deterministic";
 import { tierModel } from "./dispatch";
 import {
-  DEFAULT_GRADER_PROMPT_TIMEOUT_MS,
-  timeoutMs,
+  graderTimeoutMs,
   withTimeout,
 } from "./timeout";
 import type { RouterConfig } from "../router/config";
@@ -202,10 +201,9 @@ export function createVerificationWiring(deps: {
       // Time-boxed for the same reason as the producer prompt, but with a
       // sharper edge: a grader that never answers must not be able to hold the
       // gate open. The RouterTimeoutError is deliberately allowed to propagate
-      // to runChecker, whose fail-closed catch turns it into a non-passing
-      // verdict naming the timeout. Explicitly NOT modelled as "inconclusive",
-      // because an inconclusive grader that releases the gate is a fabricated
-      // pass wearing a hedge.
+      // to runChecker, which returns unverifiable with the timeout reason.
+      // The gate decides acceptance using strictUnverifiable; no producer
+      // escalation is warranted when the grader itself could not finish.
       //
       // No abort is issued here: the finally below already calls
       // disposeChildSession, which aborts before it deletes, so a second abort
@@ -222,10 +220,7 @@ export function createVerificationWiring(deps: {
             parts: [{ type: "text", text: req.prompt }],
           },
         }),
-        timeoutMs(
-          cfg.enforcement?.verify?.graderTimeoutMs,
-          DEFAULT_GRADER_PROMPT_TIMEOUT_MS,
-        ),
+        graderTimeoutMs(req.tier, cfg.enforcement?.verify?.graderTimeoutMs),
         "grader prompt",
       );
       return { sessionID: sid, text: extractAssistantText(res) };
@@ -255,6 +250,7 @@ export function createVerificationWiring(deps: {
         minGraderTier: cfg.enforcement?.verify?.minGraderTier ?? null,
       },
       require: cfg.enforcement?.verify?.require,
+      strictUnverifiable: cfg.enforcement?.verify?.strictUnverifiable,
     };
   };
 

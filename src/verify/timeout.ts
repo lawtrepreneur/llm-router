@@ -25,6 +25,14 @@
 export const DEFAULT_DELEGATE_PROMPT_TIMEOUT_MS = 600_000;
 /** Ceiling for one grader `session.prompt` turn (1 minute). */
 export const DEFAULT_GRADER_PROMPT_TIMEOUT_MS = 60_000;
+/** Per-tier grader ceilings; unknown/custom tiers receive the heavy ceiling. */
+export const GRADER_TIMEOUT_MS_BY_TIER: Readonly<Record<string, number>> = {
+  fast: 60_000, medium: 180_000, heavy: 600_000,
+};
+
+export function graderTimeoutMs(tier: string, override?: number): number {
+  return timeoutMs(override, GRADER_TIMEOUT_MS_BY_TIER[tier] ?? GRADER_TIMEOUT_MS_BY_TIER.heavy!);
+}
 /** Ceiling for the whole acceptance gate, grader ladder included (90 s). */
 export const DEFAULT_GATE_BUDGET_MS = 90_000;
 

@@ -307,7 +307,8 @@ describe("delegate time-boxes (fake timers)", () => {
   // Grader
   // -------------------------------------------------------------------------
 
-  it("cuts off a grader that never resolves and returns an honest unmet", async () => {
+  it("strict mode cuts off a grader without retrying or escalating", async () => {
+    writeOverrides(dir, { strictUnverifiable: true });
     const rec = newRecorder();
     const hooks: any = await ModelRouterPlugin(
       makeCtx(dir, rec, {
@@ -328,7 +329,8 @@ describe("delegate time-boxes (fake timers)", () => {
     // Not accepted, and NOT reported as an inconclusive skip.
     expect(result).not.toContain("[router ✓ accepted:");
     expect(result).not.toContain("inconclusive");
-    expect(rec.graderPrompts).toBeGreaterThan(0);
+    expect(rec.graderPrompts).toBe(1);
+    expect(rec.producerPrompts).toBe(1);
   });
 
   it("disposes a timed-out grader session exactly once", async () => {
@@ -374,7 +376,10 @@ describe("delegate time-boxes (fake timers)", () => {
     await vi.advanceTimersByTimeAsync(1000 * 8);
     const result = await pending;
 
-    expect(result).toContain("[router status: unmet]");
+    expect(result).toContain("[router ✓ accepted:");
+    expect(result).toContain("Verification caveats");
+    expect(rec.producerPrompts).toBe(1);
+    expect(rec.graderPrompts).toBe(1);
     expect(result).toContain("grader prompt timed out after 1000ms");
     expect(DEFAULT_GRADER_PROMPT_TIMEOUT_MS).toBeGreaterThan(1000);
   });
@@ -441,8 +446,8 @@ describe("delegate time-boxes (fake timers)", () => {
     expect(resultB).not.toContain("timed out");
   });
 
-  it("returns an honest unmet when the whole gate exceeds its budget", async () => {
-    writeOverrides(dir, { gateBudgetMs: 2000, graderTimeoutMs: 600000 });
+  it.each([false, true])("gate budget exhaustion is unverifiable (strict=%s)", async (strictUnverifiable) => {
+    writeOverrides(dir, { gateBudgetMs: 2000, graderTimeoutMs: 600000, strictUnverifiable });
     const rec = newRecorder();
     const hooks: any = await ModelRouterPlugin(
       makeCtx(dir, rec, {
@@ -459,8 +464,15 @@ describe("delegate time-boxes (fake timers)", () => {
     await vi.advanceTimersByTimeAsync(2000 * 8);
     const result = await pending;
 
-    expect(result).toContain("[router status: unmet]");
     expect(result).toContain("verification gate timed out after 2000ms");
-    expect(result).not.toContain("[router ✓ accepted:");
+    expect(rec.producerPrompts).toBe(1);
+    expect(rec.graderPrompts).toBe(1);
+    if (strictUnverifiable) {
+      expect(result).toContain("[router status: unmet]");
+      expect(result).not.toContain("[router ✓ accepted:");
+    } else {
+      expect(result).toContain("[router ✓ accepted:");
+      expect(result).toContain("Verification caveats");
+    }
   });
 });

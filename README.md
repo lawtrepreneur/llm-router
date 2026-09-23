@@ -4,7 +4,7 @@
 
 > **Use the cheapest model that can do the job. Automatically.**
 
-An [OpenCode](https://opencode.ai) plugin that routes every coding task to the right-priced AI tier — automatically, on every message, with 3,116–4,686 characters of system-prompt overhead depending on the orchestrator and enforcement mode.
+An [OpenCode](https://opencode.ai) plugin that routes every coding task to the right-priced AI tier — automatically, on every message, with 3,120–5,111 characters of system-prompt overhead depending on the orchestrator and enforcement mode.
 
 ## Why it's different
 
@@ -220,7 +220,7 @@ With router → split:
 | Cross-provider fallback | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Cost ratio awareness | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Plan annotation with tiers | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Measured prompt overhead: 3,116–4,686 chars | ✅ | — | ❌ | ❌ | ❌ |
+| Measured prompt overhead: 3,120–5,111 chars | ✅ | — | ❌ | ❌ | ❌ |
 
 **Claude native**: single model for everything, no cost routing. If you're using claude.ai or OpenCode without plugins, you're paying the same price for `grep` as for architecture design.
 
@@ -873,7 +873,7 @@ Defines provider fallback order when a delegated task fails:
 
 ## Delegation enforcement (advisory by default)
 
-The read-only cap banners described above are advisory: a well-behaved subagent will respect them, but nothing prevents a model from making one more read after the `[⚠ CAP REACHED]` banner. The **enforcement layer** turns delegation into a produce → verify → accept/escalate loop with independent acceptance and quality escalation. As of v1.3.0 it runs in **`advisory` mode by default**: every non-trivial delegation is verified and any miss surfaces a forcing-note, but nothing is ever hard-blocked (the DoD/acceptance section adds 798 characters to the orchestrator system prompt, roughly 200–220 tokens at 3.6–4.0 characters per token, and subagents may receive non-blocking guard banners). Set `"mode": "off"` — or run `/router enforce off` — to restore byte-for-byte-unchanged routing with zero added prompt tokens and zero new latency. Hard-blocks only activate in `"mode": "enforced"`.
+The read-only cap banners described above are advisory: a well-behaved subagent will respect them, but nothing prevents a model from making one more read after the `[⚠ CAP REACHED]` banner. The **enforcement layer** turns delegation into a produce → verify → accept/escalate loop with independent acceptance and quality escalation. As of v1.3.0 it runs in **`advisory` mode by default**: every non-trivial delegation is verified and any genuine failure surfaces a forcing-note, but nothing is ever hard-blocked (the DoD/acceptance section adds 1,219 characters to the orchestrator system prompt, roughly 305–340 tokens at 3.6–4.0 characters per token, and subagents may receive non-blocking guard banners). Unavailable verification is accepted with explicit caveats by default; `enforcement.verify.strictUnverifiable: true` restores rejection without producer escalation. Set `"mode": "off"` — or run `/router enforce off` — to restore byte-for-byte-unchanged routing with zero added prompt tokens and zero new latency. Hard-blocks only activate in `"mode": "enforced"`.
 
 ### The three enforcement layers
 
@@ -920,7 +920,7 @@ explicitly in `tiers.json`:
 | Key | Bundled default | Bounds |
 |-----|-----------------|--------|
 | `delegateTimeoutMs` | `600000` (10 min) | One producer turn. |
-| `graderTimeoutMs` | `60000` (1 min) | One grader turn. |
+| `graderTimeoutMs` | fast `60000` / medium `180000` / heavy `600000` | One grader turn; explicit override wins. |
 | `gateBudgetMs` | `90000` (90 s) | The whole acceptance gate. |
 
 Each budget is per **ladder attempt**, not per delegation: a fast → medium → heavy
@@ -995,7 +995,7 @@ After `/annotate-plan`:
 
 ## Token overhead
 
-Measured with the bundled Anthropic preset in normal mode (the shipped `activePreset`/`activeMode` defaults), the routing protocol is 3,120 characters for a non-Claude orchestrator. A Claude orchestrator receives 3,892 characters after its authority prefix, or 4,690 characters when the 798-character DoD/enforcement section is enabled. That is roughly 770–1,295 tokens across the three paths at 3.6–4.0 characters per token. The optional anti-narration clause adds another 650 characters to the Claude path.
+Measured with the bundled Anthropic preset in normal mode (the shipped `activePreset`/`activeMode` defaults), the routing protocol is 3,120 characters for a non-Claude orchestrator. A Claude orchestrator receives 3,892 characters after its authority prefix, or 5,111 characters when the 1,219-character DoD/enforcement section is enabled. That is roughly 780–1,420 tokens across the three paths at 3.6–4.0 characters per token. The optional anti-narration clause adds another 650 characters to the Claude path.
 
 These are character counts of the prompts the shipped config actually produces, so they move whenever the protocol text does. `test/unit/docs-drift.test.ts` recomputes all three from `tiers.json` on every run and fails unless this section still quotes them, so a change that grows the protocol cannot land without updating these numbers.
 

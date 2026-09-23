@@ -126,7 +126,9 @@ export interface EnforcementConfig {
   verify?: { require?: "never" | "whenDoDPresent" | "always"; requireExplicitDoD?: boolean; preferDeterministic?: boolean; graderPolicy?: "atLeastProducerTier"; graderTemperature?: number; minGraderTier?: string | null;
     /** Ceiling for one producer `session.prompt` turn, in ms. Default 600000. */
     delegateTimeoutMs?: number;
-    /** Ceiling for one grader `session.prompt` turn, in ms. Default 60000. */
+    /** Reject unavailable verification. Default false; never escalates it. */
+    strictUnverifiable?: boolean;
+    /** Override tier ceilings: fast 60000 / medium 180000 / heavy 600000 ms. */
     graderTimeoutMs?: number;
     /** Ceiling for the whole acceptance gate, in ms. Default 90000. */
     gateBudgetMs?: number };
@@ -680,6 +682,9 @@ function validateEnforcement(obj: Record<string, unknown>): void {
       enforcement.verify !== null
     ) {
       const verify = enforcement.verify as Record<string, unknown>;
+      if (verify.strictUnverifiable !== undefined && typeof verify.strictUnverifiable !== "boolean") {
+        throw new Error("tiers.json: enforcement.verify.strictUnverifiable must be a boolean");
+      }
       if (
         verify.graderPolicy !== undefined &&
         verify.graderPolicy !== "atLeastProducerTier"

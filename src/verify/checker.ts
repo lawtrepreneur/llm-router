@@ -231,6 +231,7 @@ export async function runChecker(input: CheckerInput, deps: CheckerDeps): Promis
   } catch (err) {
     return {
       pass: false,
+      outcome: "unverifiable",
       method: "checker",
       reasons: [scrubText("grader dispatch failed: " + String(err))],
     };
@@ -263,6 +264,7 @@ export async function runChecker(input: CheckerInput, deps: CheckerDeps): Promis
   // 7. Return verdict
   return {
     pass: parsed.pass === true,
+    outcome: parsed.pass ? "pass" : "fail",
     method: "checker",
     reasons: parsed.reasons.map(scrubText),
     evidence: scrubText("grader=" + graderTier),
