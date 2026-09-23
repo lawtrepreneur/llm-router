@@ -208,12 +208,83 @@ function buildPresetOutput(cfg: RouterConfig, args: string): string {
   return buildUnknownPreset(cfg, requestedPreset);
 }
 
+// Fail-closed skips in system.transform are silent by design, but a transform
+// that never carries a sessionID would silently disable routing for the whole
+// session. Surface it once rather than never.
+let warnedMissingTransformSession = false;
+function warnMissingTransformSessionOnce(): void {
+  if (warnedMissingTransformSession) return;
+  warnedMissingTransformSession = true;
+  console.warn(
+    "[model-router] chat.system.transform received no sessionID; skipping delegation-protocol injection (fail-closed)",
+  );
+}
+
+let warnedSessionLookupFailed = false;
+function warnSessionLookupFailedOnce(): void {
+  if (warnedSessionLookupFailed) return;
+  warnedSessionLookupFailed = true;
+  console.warn(
+    "[model-router] session lookup failed while classifying a chat.system.transform session; assuming top-level orchestrator",
+  );
+}
+
+const SESSION_ROOT_MEMO_MAX = 500;
+
 const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   let cfg = loadConfig();
   const activeTiers = getActiveTiers(cfg);
 
   // Per-plugin-instance session store: owns subagentSessionIDs and subagentCapState.
   const sessionStore = createSessionStore();
+
+  // Authoritative orchestrator-vs-child classification memo, keyed by sessionID.
+  // true  = proven top-level (no parentID) -> inject the delegation protocol
+  // false = proven child -> never inject
+  // absent = not yet resolved
+  //
+  // Exists because session.created is an EVENT: nothing guarantees the plugin
+  // has processed it before the child's first system.transform runs. Tier-named
+  // agents are also marked synchronously from chat.message, but `general`,
+  // `explore`, markdown-defined agents and everything mapped through
+  // `subagentTiers` (which can never be tier-named by construction) have no
+  // synchronous path at all. One session.get per session closes that race
+  // without depending on event ordering.
+  const sessionRootMemo = new Map<string, boolean>();
+
+  /**
+   * Resolve whether a session is the top-level orchestrator, authoritatively.
+   *
+   * Returns true only when the backend confirms the session has no parentID.
+   * Returns false when it confirms a parentID (and marks the session as a child
+   * so the synchronous path catches it next time).
+   *
+   * On lookup failure it returns true — deliberately NOT fail-closed. A transient
+   * backend error must not silently strip the orchestrator of its routing rules
+   * for the rest of the session; the event path and the chat.message path both
+   * still cover the common cases, so the exposure is a rare, transient re-run of
+   * the old behaviour rather than a permanent loss of function.
+   */
+  const resolveIsRootSession = async (sessionID: string): Promise<boolean> => {
+    const memo = sessionRootMemo.get(sessionID);
+    if (memo !== undefined) return memo;
+    try {
+      const res = await ctx.client.session.get({ path: { id: sessionID } });
+      const parentID = res?.data?.parentID;
+      const isRoot = !(typeof parentID === "string" && parentID !== "");
+      sessionRootMemo.set(sessionID, isRoot);
+      while (sessionRootMemo.size > SESSION_ROOT_MEMO_MAX) {
+        const oldest = sessionRootMemo.keys().next().value;
+        if (oldest === undefined) break;
+        sessionRootMemo.delete(oldest);
+      }
+      if (!isRoot) sessionStore.markChildSession(sessionID);
+      return isRoot;
+    } catch {
+      warnSessionLookupFailedOnce();
+      return true;
+    }
+  };
 
   // Per-plugin-instance trajectory store (Phase 0.3 scaffolding — RECORD-ONLY).
   // Observes subagent tool activity to build a per-session scorecard. It emits
@@ -557,6 +628,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               changedFileStore.clear(producerSid);
               try {
                 sessionStore.unregister(producerSid);
+                sessionRootMemo.delete(producerSid);
               } catch {
                 // non-fatal
               }
@@ -960,13 +1032,38 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     },
 
     // -----------------------------------------------------------------------
-    // Gated trajectory debug dump (Phase 0.3, T0.3.3) — RECORD-ONLY, OPT-IN.
-    // No-op unless MODEL_ROUTER_TRAJECTORY_DEBUG=1. On session.idle, writes the
-    // session's trajectory scorecard to a throwaway file under the OS temp dir
-    // for manual inspection. Best-effort; never throws into the session.
-    // Emits nothing model-visible, so GA-1 (no-regression) is preserved.
+    // Session lifecycle: classify children on session.created, then write
+    // enforcement scorecards on session.idle. Full trajectory debug dumps
+    // remain opt-in behind MODEL_ROUTER_TRAJECTORY_DEBUG=1 (Phase 0.3, T0.3.3).
+    // Dumps go under the OS temp dir for manual inspection. Best-effort;
+    // never throws into the session or emits model-visible debug output.
     // -----------------------------------------------------------------------
     event: async ({ event }: any) => {
+      // Child-session classification. opencode reports every child session with
+      // a parentID, which is the only agent-name-INDEPENDENT signal available:
+      // registerFromChatMessage recognises a session only when its agent name is
+      // literally an active tier, so `general`, `explore`, markdown agents,
+      // every agent mapped through `subagentTiers` (which by construction can
+      // never be tier-named — see resolveSubagentOverrides) and the plugin's own
+      // grader sessions all went unmarked. Unmarked meant system.transform
+      // injected "You are the orchestrator, delegate with Task(...)" into a
+      // subagent that has no task tool, and the subagent refused the work.
+      if (event?.type === "session.created") {
+        const info = event?.properties?.info;
+        if (
+          typeof info?.id === "string" &&
+          typeof info?.parentID === "string" &&
+          info.parentID !== ""
+        ) {
+          try {
+            sessionStore.markChildSession(info.id);
+          } catch {
+            // best-effort: classification must never crash a real session
+          }
+        }
+        return;
+      }
+
       if (event?.type !== "session.idle") return;
       const sid = event?.properties?.sessionID;
       if (typeof sid !== "string") return;
@@ -1146,10 +1243,30 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
         // Use last known config if file read fails
       }
 
-      // Skip injection for child (subagent) sessions.
-      // Child sessions are detected via session.created events with a parentID.
+      // Inject ONLY when this is provably the top-level orchestrator session.
+      //
+      // Fail CLOSED. The old guard was `sessionID && isSubagent(sessionID)`,
+      // which injected whenever the session could not be proven to be a child.
+      // Both failure directions are not equal: a missed injection costs the
+      // orchestrator its routing rules, while a spurious injection tells a
+      // subagent it is an orchestrator that MUST delegate with a `task` tool it
+      // does not have — and a literal-minded model then refuses the dispatch
+      // outright instead of doing the work.
       const sessionID = _input?.sessionID;
-      if (sessionID && sessionStore.isSubagent(sessionID)) return;
+      if (typeof sessionID !== "string" || sessionID === "") {
+        warnMissingTransformSessionOnce();
+        return;
+      }
+      // graderSessions is checked separately from isSubagent because it is
+      // populated synchronously the instant client.session.create resolves,
+      // whereas the session.created event that feeds markChildSession may not
+      // have arrived yet. A grader told to orchestrate stalls until its budget
+      // expires.
+      if (graderSessions.has(sessionID)) return;
+      if (sessionStore.isSubagent(sessionID)) return;
+      // Not known to be a child yet — that may only mean session.created has not
+      // been delivered. Ask the backend once and cache the answer.
+      if (!(await resolveIsRootSession(sessionID))) return;
 
       // For Claude-backed orchestrators, prepend an adversarial opener that
       // revokes the cached "Claude Code explorer" priming for the routing

@@ -289,6 +289,86 @@ describe("createSessionStore", () => {
   });
 });
 
+describe("createSessionStore — markChildSession", () => {
+  it("marks a child as a subagent", () => {
+    const store = createSessionStore();
+    store.markChildSession("ses_child");
+    expect(store.isSubagent("ses_child")).toBe(true);
+  });
+
+  it("assigns neither a tier nor cap state", () => {
+    const store = createSessionStore();
+    store.markChildSession("ses_child_untiered");
+    expect(store.getTier("ses_child_untiered")).toBeNull();
+    expect(store.isTrivial("ses_child_untiered")).toBe(false);
+  });
+
+  it("leaves untiered child tool output byte-identical without a banner", () => {
+    const store = createSessionStore();
+    const sessionID = "ses_child_output";
+    store.markChildSession(sessionID);
+    const outputRef = { output: "x" };
+    store.recordToolCall({ sessionID, tool: "read", args: { file_path: "a.ts" } }, outputRef);
+    expect(outputRef.output).toBe("x");
+    store.recordToolCall({ sessionID, tool: "read", args: { file_path: "a.ts" } }, outputRef);
+    expect(outputRef.output).toBe("x");
+  });
+
+  it("classifies a non-tier agent only through the child-session path", () => {
+    const store = createSessionStore();
+    const sessionID = "ses_child_general";
+    store.registerFromChatMessage({ agent: "general", sessionID }, dispatch("work"), cfg, tierNames);
+    expect(store.isSubagent(sessionID)).toBe(false);
+    store.markChildSession(sessionID);
+    expect(store.isSubagent(sessionID)).toBe(true);
+    expect(store.getTier(sessionID)).toBeNull();
+  });
+
+  it("ignores an empty session ID", () => {
+    const store = createSessionStore();
+    store.markChildSession("");
+    expect(store.isSubagent("")).toBe(false);
+    expect(store.getTier("")).toBeNull();
+    expect(store.isTrivial("")).toBe(false);
+  });
+
+  it("evicts a child-marked session after the idle TTL", () => {
+    let clock = 100;
+    const store = createSessionStore({ now: () => clock });
+    store.markChildSession("ses_child_idle");
+    clock += 999;
+    store.sweep(clock, 1000);
+    expect(store.isSubagent("ses_child_idle")).toBe(true);
+    clock += 1;
+    store.sweep(clock, 1000);
+    expect(store.isSubagent("ses_child_idle")).toBe(false);
+  });
+
+  it("preserves an already registered tier and its cap state", () => {
+    const store = createSessionStore();
+    const sessionID = "ses_child_tiered";
+    store.registerFromChatMessage(
+      { agent: "fast", sessionID },
+      dispatch("read a.ts CAP:4"),
+      fullCfg,
+      tierNames,
+    );
+    const first: Record<string, unknown> = {};
+    store.recordToolCall({ sessionID, tool: "read", args: { file_path: "a.ts" } }, first);
+    expect(first.output).toContain("[cap: 1/4]");
+
+    store.markChildSession(sessionID);
+    expect(store.isSubagent(sessionID)).toBe(true);
+    expect(store.getTier(sessionID)).toBe("fast");
+    expect(store.isTrivial(sessionID)).toBe(true);
+    const second: Record<string, unknown> = {};
+    store.recordToolCall({ sessionID, tool: "read", args: { file_path: "a.ts" } }, second);
+    expect(second.output).toContain("[cap: 2/4]");
+    expect(second.output).toContain("REDUNDANT");
+    expect(second.output).toContain("call #1");
+  });
+});
+
 describe("classifyTrivial", () => {
   it("fast tier + 'search the codebase for X' => true", () => {
     expect(classifyTrivial("search the codebase for X", "fast", fullCfg)).toBe(true);

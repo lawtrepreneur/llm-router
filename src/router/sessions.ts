@@ -399,6 +399,26 @@ export function createSessionStore(options: SessionStoreOptions = {}) {
       touch(sessionID);
     },
 
+    /**
+     * Mark a session as a child (subagent) session without assigning a tier or
+     * cap state. This is the agent-name-INDEPENDENT classifier: opencode reports
+     * every child session — a `general`/`explore` dispatch, a markdown-defined
+     * agent, an agent repointed through `subagentTiers`, or a plugin-created
+     * grader — with a `parentID`, whereas `registerFromChatMessage` only ever
+     * recognises a name that is literally an active tier.
+     *
+     * Deliberately sets NO cap state. Cap/redundancy banners are a tier-scoped
+     * feature and `recordToolCall` early-returns without it, so an untiered
+     * child keeps byte-identical tool output. The only thing this changes is
+     * `isSubagent`, which is what suppresses the orchestrator delegation
+     * protocol in the system.transform hook.
+     */
+    markChildSession(sessionID: string): void {
+      if (!sessionID) return;
+      subagentSessionIDs.add(sessionID);
+      touch(sessionID);
+    },
+
     /** Remove a session from tracking (used to clean up delegate producer sessions). */
     unregister(sessionID: string): void {
       evict(sessionID);

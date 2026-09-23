@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PluginInput } from "@opencode-ai/plugin";
+import type { Model } from "@opencode-ai/sdk";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ModelRouterPlugin from "../../src/index";
 import { invalidateConfigCache } from "../../src/router/config";
+import * as sessions from "../../src/router/sessions";
 
 /**
  * Regression coverage for the child-session leak.
@@ -27,12 +30,15 @@ interface Harness {
   graderIDs: string[];
   aborted: string[];
   deleted: string[];
+  getSession: ReturnType<typeof vi.fn>;
 }
 
 function makeHarness(opts: {
   graderPromptRejects?: boolean;
   graderPass?: boolean;
   producerPromptRejects?: boolean;
+  parentID?: string;
+  sessionGetRejects?: boolean;
 } = {}): Harness {
   const createdIDs: string[] = [];
   const createOptions: any[] = [];
@@ -40,9 +46,14 @@ function makeHarness(opts: {
   const aborted: string[] = [];
   const deleted: string[] = [];
   let counter = 0;
+  const getSession = vi.fn(async () => {
+    if (opts.sessionGetRejects) throw new Error("session lookup failure");
+    return { data: { parentID: opts.parentID } };
+  });
 
   const client = {
     session: {
+      get: getSession,
       create: async (options: any) => {
         counter += 1;
         const id = `sess-${counter}`;
@@ -98,7 +109,7 @@ function makeHarness(opts: {
     client: client as any,
   };
 
-  return { ctx, createdIDs, createOptions, graderIDs, aborted, deleted };
+  return { ctx, createdIDs, createOptions, graderIDs, aborted, deleted, getSession };
 }
 
 async function runDelegate(
@@ -133,6 +144,7 @@ describe("child session lifecycle", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     if (savedUserProfile === undefined) delete process.env.USERPROFILE;
@@ -144,6 +156,71 @@ describe("child session lifecycle", () => {
   // -------------------------------------------------------------------------
   // parentID
   // -------------------------------------------------------------------------
+
+  describe("system transform session resolver", () => {
+    const model: Model = {
+      id: "test-model",
+      providerID: "test-provider",
+      api: { id: "test-model", url: "http://localhost", npm: "test" },
+      name: "Test model",
+      capabilities: {
+        temperature: true, reasoning: false, attachment: false, toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+      },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limit: { context: 1000, output: 100 },
+      status: "active",
+      options: {},
+      headers: {},
+    };
+
+    it("skips an unknown child before session.created and marks it as a subagent", async () => {
+      const storeSpy = vi.spyOn(sessions, "createSessionStore");
+      const h = makeHarness({ parentID: ORCHESTRATOR_SID });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const output = { system: [] as string[] };
+
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "child", model }, output);
+
+      expect(output.system).toEqual([]);
+      expect(storeSpy.mock.results[0].value.isSubagent("child")).toBe(true);
+      expect(h.getSession).toHaveBeenCalledWith({ path: { id: "child" } });
+    });
+
+    it("injects exactly one entry for an unknown root", async () => {
+      const h = makeHarness();
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      const output = { system: [] as string[] };
+
+      await hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output);
+
+      expect(output.system).toHaveLength(1);
+    });
+
+    it.each([undefined, ORCHESTRATOR_SID])("looks up each session once (parentID=%s)", async (parentID) => {
+      const h = makeHarness({ parentID });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      for (let i = 0; i < 2; i++) {
+        const output = { system: [] as string[] };
+        await hooks["experimental.chat.system.transform"]!({ sessionID: "session", model }, output);
+        expect(output.system).toHaveLength(parentID ? 0 : 1);
+      }
+      expect(h.getSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("assumes root on rejection without caching the failure", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const h = makeHarness({ sessionGetRejects: true });
+      const hooks = await ModelRouterPlugin(h.ctx as PluginInput);
+      for (let i = 0; i < 2; i++) {
+        const output = { system: [] as string[] };
+        await expect(hooks["experimental.chat.system.transform"]!({ sessionID: "root", model }, output)).resolves.toBeUndefined();
+        expect(output.system).toHaveLength(1);
+      }
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+    });
+  });
 
   it("creates every child session with the orchestrator as parentID", async () => {
     const h = makeHarness({ graderPass: true });
