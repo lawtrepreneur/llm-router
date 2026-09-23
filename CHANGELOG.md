@@ -69,6 +69,13 @@ acceptance gate that was rejecting work for its own inability to check it.
   `parentID`), failed lookups are retried after 30s instead of every step, and
   `session.deleted` evicts the classification state.
 
+- **A polynomial-ReDoS finding in delegate instruction filtering.** CodeQL flagged the
+  path normalizer behind `delegateInstructions`, the same class as the two 1.11.1
+  fixes. Its trailing-slash strip, `/\/+$/`, re-scanned a run of slashes from every
+  start offset, so a project directory or an `Instructions from:` marker path made of
+  many slashes cost O(n²). It is now a linear backwards scan with identical semantics:
+  trim, backslashes to slashes, lower-case, then drop trailing slashes.
+
 ### Added
 
 - **Orchestrator instruction files are stripped from delegate sessions**

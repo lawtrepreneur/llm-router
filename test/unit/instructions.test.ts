@@ -80,3 +80,38 @@ describe("delegateInstructions config validation", () => {
     );
   });
 });
+
+describe("stripDelegateInstructions trailing-slash normalization (js/polynomial-redos)", () => {
+  const globalSlashes = "Instructions from: C:\\Users\\user\\\\\\\nDelegate everything";
+  const localSlashes = "Instructions from: D:/git/proj/sub///\nCoding conventions";
+  const projectRootSlashes = "Instructions from: D:\\git\\proj\\\\\\\nRoot conventions";
+
+  it.each([
+    ["strip-global", [localSlashes, projectRootSlashes]],
+    ["strip-all", []],
+  ] as const)("matches paths with several trailing slashes under %s", (policy, expected) => {
+    for (const project of ["D:/git/proj", "D:\\git\\proj\\\\\\", "D:/git/proj///"]) {
+      const output = { system: [globalSlashes, localSlashes, projectRootSlashes] };
+      stripDelegateInstructions(output, { ...cfg, delegateInstructions: policy }, project);
+      expect(output.system).toEqual(expected);
+    }
+  });
+
+  it.each(["strip-global", "strip-all"] as const)(
+    "does not treat a sibling sharing the project prefix as local with trailing slashes (%s)",
+    (policy) => {
+      const output = { system: ["Instructions from: D:\\git\\project-other\\\\\\\nOther"] };
+      stripDelegateInstructions(output, { ...cfg, delegateInstructions: policy }, "D:/git/project///");
+      expect(output.system).toEqual([]);
+    },
+  );
+
+  it.each(["", "x"])("handles a 50k-slash marker path in linear time (suffix %j)", (suffix) => {
+    const output = { system: [`provider\nInstructions from: ${"/".repeat(50_000)}${suffix}\nBody`] };
+    const started = Date.now();
+    stripDelegateInstructions(output, cfg, `D:/git/proj${"/".repeat(50_000)}`);
+    const elapsed = Date.now() - started;
+    expect(output.system).toEqual(["provider\n"]);
+    expect(elapsed).toBeLessThan(1000);
+  });
+});

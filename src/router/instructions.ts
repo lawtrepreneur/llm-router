@@ -3,6 +3,20 @@ import type { RouterConfig } from "./config";
 export type DelegateInstructionsPolicy = "strip-global" | "strip-all" | "keep";
 
 /**
+ * Strip trailing forward slashes without a regex.
+ *
+ * `/\/+$/` is a polynomial-ReDoS footgun (CodeQL js/polynomial-redos): the `$`
+ * anchor makes the engine re-scan the run of slashes from every start offset,
+ * so a path of many slashes costs O(n²). Both the configured project directory
+ * and the path parsed out of an `Instructions from:` marker are library input.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* '/' */) end--;
+  return value.slice(0, end);
+}
+
+/**
  * opencode injects instruction files into every session, including children.
  * A global orchestrator persona can tell delegates to "fire the fast agent via
  * Task for ANY read-only work" or impose a "REQUIRED TOOLS" whitelist, even
@@ -21,7 +35,7 @@ export function stripDelegateInstructions(
     if (policy === "keep") return;
 
     const normalize = (path: string): string =>
-      path.trim().replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+      stripTrailingSlashes(path.trim().replace(/\\/g, "/").toLowerCase());
     const project = projectDirectory ? normalize(projectDirectory) : undefined;
     output.system = output.system.flatMap((entry) => {
       if (typeof entry !== "string") return [entry];
