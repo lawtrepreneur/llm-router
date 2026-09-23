@@ -157,6 +157,34 @@ describe("child session lifecycle", () => {
     invalidateConfigCache();
   });
 
+  describe("task false-refusal detection", () => {
+    it.each([
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: true, id: true, tool: "task", suspected: true },
+      { calls: 1, text: "ESCALATE: tools unavailable", enabled: true, id: true, tool: "task", suspected: false },
+      { calls: 0, text: "DONE: no tools needed", enabled: true, id: true, tool: "task", suspected: false },
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: false, id: true, tool: "task", suspected: false },
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: true, id: false, tool: "task", suspected: false },
+      { calls: 0, text: "ESCALATE: tools unavailable", enabled: true, id: true, tool: "read", suspected: false },
+    ])("annotates only suspected returns: %j", async ({ calls, text, enabled, id, tool, suspected }) => {
+      loadConfig().falseRefusalDetection = enabled;
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      await hooks.event!({ event: { type: "session.created", properties: { info: {
+        id: "refusal-child", parentID: ORCHESTRATOR_SID, projectID: "project",
+        directory: process.cwd(), title: "child", version: "1", time: { created: 0, updated: 0 },
+      } } } });
+      for (let i = 0; i < calls; i++) {
+        await hooks["tool.execute.after"]!({ tool: "read", sessionID: "refusal-child", callID: `read-${i}`, args: {} }, { title: "read", output: "contents", metadata: {} });
+      }
+      const output = { title: "task", output: text, metadata: id ? { sessionId: "refusal-child" } : {} };
+      await hooks["tool.execute.after"]!({ tool, sessionID: ORCHESTRATOR_SID, callID: "task-result", args: {} }, output);
+      if (suspected) {
+        expect(output.output).toBe('[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. Its tools were available and untested. Re-dispatch the same work with task_id="refusal-child" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n' + text);
+      } else {
+        expect(output.output).toBe(text);
+      }
+    });
+  });
+
   describe("task dispatch headers", () => {
     it.each(["subagent_type", "subagentType"])("prepends using %s and is idempotent", async (field) => {
       const cfg = loadConfig();

@@ -136,6 +136,13 @@ export interface EnforcementConfig {
 
 export interface RouterConfig {
   /**
+   * Detect a delegate that hands a dispatch back having made zero tool calls
+   * while complaining about tool availability, and annotate the result so the
+   * orchestrator retries instead of escalating a tier on a refusal that was
+   * never tested. Defaults to true.
+   */
+  falseRefusalDetection?: boolean;
+  /**
    * Prepend a short mechanical header to every task dispatch: tier identity,
    * working directory, tool-schema authority, empty-results-are-results, the
    * read-only budget, and the false-refusal notice. Defaults to true. Set false
@@ -496,6 +503,12 @@ function validateCoreKeys(obj: Record<string, unknown>): void {
 function validateDispatchHeader(obj: Record<string, unknown>): void {
   if (obj.dispatchHeader !== undefined && typeof obj.dispatchHeader !== "boolean") {
     throw new Error("tiers.json: 'dispatchHeader' must be a boolean");
+  }
+}
+
+function validateFalseRefusalDetection(obj: Record<string, unknown>): void {
+  if (obj.falseRefusalDetection !== undefined && typeof obj.falseRefusalDetection !== "boolean") {
+    throw new Error("tiers.json: 'falseRefusalDetection' must be a boolean");
   }
 }
 
@@ -897,6 +910,7 @@ export function validateConfig(raw: unknown): RouterConfig {
   validateEnforcement(obj);
   validateDelegateInstructions(obj);
   validateDispatchHeader(obj);
+  validateFalseRefusalDetection(obj);
 
   return raw as RouterConfig;
 }

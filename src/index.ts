@@ -15,6 +15,7 @@ import { buildAgentOptions, warnAgentOptionsEffortOnce } from "./router/agent-op
 import { selectTierPrompt, TOOL_AUTHORITY_CLAUSE } from "./router/prompts";
 import { stripDelegateInstructions } from "./router/instructions";
 import { buildDispatchHeader } from "./router/dispatch-header";
+import { detectFalseRefusal, parseTaskResult as parseRefusalTaskResult } from "./router/false-refusal";
 import {
   buildTiersOutput,
   buildPresetList,
@@ -951,6 +952,23 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     "tool.execute.after": async (input: any, output: any) => {
       if (bypassed) return;
       sessionStore.recordToolCall(input, output);
+
+      // Best-effort false-refusal observation alongside the existing guard path.
+      // Keep scorecards unchanged; counts live in the TTL-managed trajectory.
+      try {
+        if (input?.tool === "task" && cfg.falseRefusalDetection !== false) {
+          const { childSessionID, text } = parseRefusalTaskResult(output);
+          if (childSessionID) {
+            const calls = trajectoryStore.toolCallCount(childSessionID);
+            if (detectFalseRefusal({ toolCalls: calls, resultText: text }).suspected) {
+              output.output = `[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. Its tools were available and untested. Re-dispatch the same work with task_id="${childSessionID}" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n${output.output}`;
+              trajectoryStore.recordFalseRefusal(childSessionID);
+            }
+          }
+        }
+      } catch {
+        // Best-effort: malformed/frozen results must never break a dispatch.
+      }
 
       // Record-only trajectory observation (mutates internal maps only; never
       // touches output, so emitted banners/observations stay byte-identical).

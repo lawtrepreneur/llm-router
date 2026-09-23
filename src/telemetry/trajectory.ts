@@ -19,6 +19,7 @@ export interface TrajectoryState {
   sessionID: string;
   tier: string | null;
   toolCallCount: number;
+  falseRefusalCount: number;
   readCount: number;
   execCount: number;
   selfScriptCount: number;
@@ -48,6 +49,7 @@ export function createTrajectory(
     sessionID,
     tier: tier ?? null,
     toolCallCount: 0,
+    falseRefusalCount: 0,
     readCount: 0,
     execCount: 0,
     selfScriptCount: 0,
@@ -186,6 +188,14 @@ export function createTrajectoryStore(options: TrajectoryStoreOptions = {}) {
     recordToolEvent(sessionID: string, event: TrajectoryToolEvent): void {
       const s = ensureState(sessionID);
       recordToolEvent(s, event);
+    },
+
+    toolCallCount(sessionID: string): number {
+      return store.get(sessionID)?.toolCallCount ?? 0;
+    },
+
+    recordFalseRefusal(sessionID: string): void {
+      ensureState(sessionID).falseRefusalCount += 1;
     },
 
     /**

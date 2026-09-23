@@ -37,11 +37,30 @@ falls back to its in-code default), so you only ever see them in an overrides fi
 |---|---|---|---|
 | `delegateInstructions` | `"strip-global" \| "strip-all" \| "keep"` | `"strip-global"` | Instruction-file filtering for delegate sessions only; never changes the orchestrator. See below. |
 | `dispatchHeader` | `boolean` | `true` | Prepends mechanical guidance to tier-targeted `task` prompts. See below. |
+| `falseRefusalDetection` | `boolean` | `true` | Annotates capability-complaining hand-backs with zero recorded child tool calls. See below. |
 | `tierPromptsGoalOriented` | `Record<string, string>` | built-in goal-oriented prompts in `src/router/prompts.ts` | Goal-oriented twin of `tierPrompts`; an entry replaces the built-in for that tier. See [Prompt styles](#prompt-styles-promptstyle). |
 | `modelGenerations` | `{ strong?: string[] }` | `DEFAULT_STRONG_MODEL_PATTERNS` in `src/router/config.ts` | Shared model-ID substring pattern lists. `strong` drives `promptStyle: "auto"` resolution. |
 | `subagentTiers` | `Record<string, string>` | `{}` — no pre-existing agent is touched | Opt-in map of your own subagent names to tier names, repointing them at the active preset's model for that tier. Unknown tier names are skipped at resolve time rather than rejected. |
 | `antiNarration` | `boolean` | `false` | Adds the anti-narration clause to Claude tier prompts and enables the non-blocking narration detector. |
 | `experimental` | `{ verifiedDelegateTool?: boolean }` | `{}` — every experimental feature off | Opt-in features. `verifiedDelegateTool` exposes the independently-verified `delegate` tool, also settable via `MODEL_ROUTER_VERIFIED_DELEGATE=1`. |
+
+---
+
+## `falseRefusalDetection`
+
+Defaults to `true`; set `falseRefusalDetection: false` to disable. Non-boolean
+values are rejected. For `task` results with a child session ID, the first
+non-empty line must start with `ESCALATE:`, `NEED MORE:`, `NEED CONTEXT:`,
+`SCOPE GROWTH:`, or `BLOCKED:` and the text must complain about capabilities.
+Only zero recorded tool calls triggers the advisory `[router] FALSE-REFUSAL SUSPECT`
+prefix, recommending retry in the same session, not tier escalation. No automatic
+retry occurs. Metadata IDs take precedence over task-wrapper IDs.
+
+Counts are retained internally per child in the existing TTL-managed trajectory
+store as `falseRefusalCount`. Existing trajectory metrics and the pinned scorecard
+format are unchanged; surfacing the counter on idle is deferred to a follow-up.
+Runtime child-ID propagation and complete, correctly ordered child tool events
+remain assumptions; zero observed calls does not prove tools were available.
 
 ---
 
