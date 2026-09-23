@@ -961,7 +961,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
           if (childSessionID) {
             const calls = trajectoryStore.toolCallCount(childSessionID);
             if (detectFalseRefusal({ toolCalls: calls, resultText: text }).suspected) {
-              output.output = `[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. Its tools were available and untested. Re-dispatch the same work with task_id="${childSessionID}" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n${output.output}`;
+              output.output = `[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. No tool call was observed for this child, so the capability claim in its answer is untested rather than demonstrated. Re-dispatch the same work with task_id="${childSessionID}" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n${output.output}`;
               trajectoryStore.recordFalseRefusal(childSessionID);
             }
           }

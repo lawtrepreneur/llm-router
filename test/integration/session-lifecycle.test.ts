@@ -178,7 +178,7 @@ describe("child session lifecycle", () => {
       const output = { title: "task", output: text, metadata: id ? { sessionId: "refusal-child" } : {} };
       await hooks["tool.execute.after"]!({ tool, sessionID: ORCHESTRATOR_SID, callID: "task-result", args: {} }, output);
       if (suspected) {
-        expect(output.output).toBe('[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. Its tools were available and untested. Re-dispatch the same work with task_id="refusal-child" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n' + text);
+        expect(output.output).toBe('[router] FALSE-REFUSAL SUSPECT — this delegate returned a hand-back after 0 tool calls. No tool call was observed for this child, so the capability claim in its answer is untested rather than demonstrated. Re-dispatch the same work with task_id="refusal-child" and an instruction to attempt it, or do it yourself; do not escalate a tier on this result.\n\n' + text);
       } else {
         expect(output.output).toBe(text);
       }

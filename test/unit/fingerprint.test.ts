@@ -8,6 +8,27 @@ describe("fingerprintToolCall", () => {
     expect(fingerprintToolCall("read", {})).toBe("read:");
   });
 
+  it("read: identical regions collide across path aliases and argument order", () => {
+    expect(fingerprintToolCall("read", { filePath: "src/index.ts", offset: 1, limit: 400 }))
+      .toBe(fingerprintToolCall("read", { limit: 400, offset: 1, file_path: "src/index.ts", unrelated: true }));
+  });
+
+  it("read: different slices of the same file do not collide", () => {
+    expect(fingerprintToolCall("read", { filePath: "src/index.ts", offset: 1, limit: 400 }))
+      .not.toBe(fingerprintToolCall("read", { filePath: "src/index.ts", offset: 900, limit: 400 }));
+  });
+
+  it.each(["offset", "limit", "start", "end", "line", "lines", "range"])(
+    "read: includes %s in region identity",
+    (field) => {
+      const args = { filePath: "a.ts", [field]: 1 };
+      const fp = fingerprintToolCall("read", args);
+      expect(fp).toBe(fingerprintToolCall("read", { ...args }));
+      expect(fp).not.toBe(fingerprintToolCall("read", { ...args, [field]: 2 }));
+      expect(fp).not.toBe(fingerprintToolCall("read", { filePath: "a.ts" }));
+    },
+  );
+
   it("grep: uses pattern + path, falls back to glob, then empty", () => {
     expect(fingerprintToolCall("grep", { pattern: "x", path: "src" })).toBe("grep:x:src");
     expect(fingerprintToolCall("grep", { pattern: "x", glob: "*.ts" })).toBe("grep:x:*.ts");
