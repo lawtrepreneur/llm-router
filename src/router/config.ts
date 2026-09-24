@@ -157,6 +157,14 @@ export interface RouterConfig {
    */
   dispatchHeader?: boolean;
   /**
+   * Repair a task dispatch that arrives without a prompt: copy a non-empty
+   * description into the prompt, or refuse the call with a readable
+   * explanation when neither carries any work. Defaults to true. Set false to
+   * restore the pre-feature behaviour where the harness rejected such a call
+   * with a bare schema error.
+   */
+  taskPromptRepair?: boolean;
+  /**
    * DELEGATE sessions only, never the orchestrator. `strip-global` (default)
    * removes instruction files outside the project, where orchestrator personas
    * normally live, and keeps project-local files. `strip-all` removes every
@@ -509,6 +517,12 @@ function validateCoreKeys(obj: Record<string, unknown>): void {
 function validateDispatchHeader(obj: Record<string, unknown>): void {
   if (obj.dispatchHeader !== undefined && typeof obj.dispatchHeader !== "boolean") {
     throw new Error("tiers.json: 'dispatchHeader' must be a boolean");
+  }
+}
+
+function validateTaskPromptRepair(obj: Record<string, unknown>): void {
+  if (obj.taskPromptRepair !== undefined && typeof obj.taskPromptRepair !== "boolean") {
+    throw new Error("tiers.json: 'taskPromptRepair' must be a boolean");
   }
 }
 
@@ -923,6 +937,7 @@ export function validateConfig(raw: unknown): RouterConfig {
   validateEnforcement(obj);
   validateDelegateInstructions(obj);
   validateDispatchHeader(obj);
+  validateTaskPromptRepair(obj);
   validateFalseRefusalDetection(obj);
 
   return raw as RouterConfig;

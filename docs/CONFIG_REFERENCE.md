@@ -38,6 +38,7 @@ falls back to its in-code default), so you only ever see them in an overrides fi
 | `delegateInstructions` | `"strip-global" \| "strip-all" \| "keep"` | `"strip-global"` | Instruction-file filtering for delegate sessions only; never changes the orchestrator. See below. |
 | `dispatchHeader` | `boolean` | `true` | Prepends mechanical guidance to tier-targeted `task` prompts. See below. |
 | `falseRefusalDetection` | `boolean` | `true` | Annotates capability-complaining hand-backs with zero recorded child tool calls. See below. |
+| `taskPromptRepair` | `boolean` | `true` | Fills a missing `task` prompt from its description, or refuses the call readably. See below. |
 | `tierPromptsGoalOriented` | `Record<string, string>` | built-in goal-oriented prompts in `src/router/prompts.ts` | Goal-oriented twin of `tierPrompts`; an entry replaces the built-in for that tier. See [Prompt styles](#prompt-styles-promptstyle). |
 | `modelGenerations` | `{ strong?: string[] }` | `DEFAULT_STRONG_MODEL_PATTERNS` in `src/router/config.ts` | Shared model-ID substring pattern lists. `strong` drives `promptStyle: "auto"` resolution. |
 | `subagentTiers` | `Record<string, string>` | `{}` — no pre-existing agent is touched | Opt-in map of your own subagent names to tier names, repointing them at the active preset's model for that tier. Unknown tier names are skipped at resolve time rather than rejected. |
@@ -89,6 +90,24 @@ under the OS temp directory, recording `headerApplied`, `tier`, and the resultin
 `promptLength` without prompt contents. It is silent by default and best-effort.
 **Propagation of the mutated before-hook args to the actual child session remains
 unverified**; the diagnostic proves hook application, not child receipt.
+
+---
+
+## `taskPromptRepair`
+
+Defaults to `true`; set `taskPromptRepair: false` to restore pre-feature behaviour,
+where the harness rejected a prompt-less `task` call with a bare schema error.
+Non-boolean values are rejected by `validateConfig`.
+
+The `task` before-hook runs this guard ahead of the dispatch header. A call whose
+`prompt` is absent, `null`, or blank has it filled from the trimmed `description`
+when that is a non-empty string; the repaired call then proceeds and receives the
+dispatch header normally. When there is no usable description the call is refused
+with a `[router]` error explaining that `task` needs a non-empty `prompt`, and that
+a request carrying no task (a greeting, an acknowledgement) should be answered
+directly instead of delegated. Calls with a real prompt, other tools, non-object
+args, and prompts of a non-string type are unchanged. Frozen args that cannot be
+repaired are left for the harness to reject.
 
 ---
 

@@ -899,6 +899,37 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
             }));
         }
       }
+      // A task call with no prompt (typically a forced delegation of a bare
+      // greeting) is otherwise rejected by the harness with a terse schema
+      // error. Repair it from the description, or refuse it readably. The
+      // refusal is computed inside the best-effort try and thrown outside it,
+      // so the catch can never swallow it.
+      let promptRefusal: string | null = null;
+      try {
+        if (input?.tool === "task" && cfg.taskPromptRepair !== false) {
+          const rawArgs: unknown = output?.args;
+          if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+            const args = rawArgs as Record<string, unknown>;
+            // Only an absent or blank prompt is repaired; a non-string prompt of
+            // some other type is a different malformation left to the harness.
+            const rawPrompt = args.prompt;
+            if (rawPrompt === undefined || rawPrompt === null || (typeof rawPrompt === "string" && rawPrompt.trim() === "")) {
+              const description = typeof args.description === "string" ? args.description.trim() : "";
+              if (description) {
+                args.prompt = description;
+              } else {
+                promptRefusal = "[router] This task call carried no prompt, and the task tool needs a non-empty `prompt` " +
+                  "stating the work for the delegate. Re-issue the call with the work restated as an instruction in " +
+                  "`prompt`. If the request carries no task at all (a greeting, an acknowledgement), do not delegate: " +
+                  "answer it directly instead.";
+              }
+            }
+          }
+        }
+      } catch {
+        // Best-effort: malformed or frozen args must never break a dispatch.
+      }
+      if (promptRefusal) throw new Error(promptRefusal);
       // Dispatch hygiene is independent of subagent guard enforcement below.
       // The plugin API declares generic args, not a task-specific argument shape.
       try {
