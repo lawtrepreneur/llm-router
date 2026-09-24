@@ -950,8 +950,9 @@ Full field notes are in [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md).
 - `docs/ENFORCEMENT.md` — architecture, hook wiring, session lifecycle
 - `docs/VERIFICATION.md` — DoD schema, deterministic checks, grader dispatch
 - `docs/ESCALATION.md` — escalation ladder configuration and cost ceilings
-- `docs/CONFIG_REFERENCE.md` — full `enforcement` block schema
+- `docs/CONFIG_REFERENCE.md` — full `enforcement` block schema, plus the OpenCode adapter (`opencodeAdapter`)
 - `docs/ENFORCEMENT_PRESETS.md` — ready-to-paste enforcement presets
+- `docs/adr/0003-opencode-adapter.md` — why and how the OpenCode CLI runs as a tier worker
 
 > These files are not included in the npm tarball. This section is the self-contained summary; the docs are available in the repository for contributors and advanced users.
 
@@ -968,6 +969,7 @@ Full field notes are in [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md).
 | `/router overrides` | Show the global + project override file paths and merge precedence |
 | `/router models [provider]` | List valid model ids from your configured providers (with defaults and deprecated flags) |
 | `/router enforce <off\|advisory\|enforced>` | Set delegation-enforcement mode (persisted) |
+| `/router adapter <off\|shadow\|live>` | Set the OpenCode CLI adapter mode (persisted; inert until `opencodeAdapter.tiers` and `allowedAgents` are configured) |
 | `/router` | With no subcommand — or an unrecognized one — prints the `/router` help and the current enforcement mode |
 | `/bypass [on\|off]` | Toggle the router off/on for the session |
 

@@ -44,6 +44,51 @@ falls back to its in-code default), so you only ever see them in an overrides fi
 | `subagentTiers` | `Record<string, string>` | `{}` — no pre-existing agent is touched | Opt-in map of your own subagent names to tier names, repointing them at the active preset's model for that tier. Unknown tier names are skipped at resolve time rather than rejected. |
 | `antiNarration` | `boolean` | `false` | Adds the anti-narration clause to Claude tier prompts and enables the non-blocking narration detector. |
 | `experimental` | `{ verifiedDelegateTool?: boolean }` | `{}` — every experimental feature off | Opt-in features. `verifiedDelegateTool` exposes the independently-verified `delegate` tool, also settable via `MODEL_ROUTER_VERIFIED_DELEGATE=1`. |
+| `opencodeAdapter` | `OpenCodeAdapterConfig` | `{ mode: "off", tiers: [], binary: "opencode", args: ["run"], timeoutMs: 600000, allowedAgents: [] }` — adapter inert | Runs the OpenCode CLI as a tier worker through the verified delegate path. See [OpenCode adapter](#opencode-adapter) below and [ADR 0003](./adr/0003-opencode-adapter.md). |
+
+---
+
+## OpenCode adapter
+
+Runs the `opencode` CLI binary as a tier worker for delegated tasks. The CLI result enters the
+delegate flow's existing baseline/acceptance-gate verification as the producer artefact — it is
+never returned unverified. Architecture and rationale: [ADR 0003](./adr/0003-opencode-adapter.md).
+
+```jsonc
+// ~/.config/opencode/opencode-model-router.overrides.jsonc (or the project file)
+"opencodeAdapter": {
+  "mode": "shadow",          // "off" | "shadow" | "live"
+  "tiers": ["medium"],       // which dispatched tiers the adapter intercepts
+  "binary": "opencode",      // CLI binary; runOpenCode appends the task prompt as the final argument
+  "args": ["run"],           // prepended args
+  "timeoutMs": 600000,       // per-invocation ceiling; overrun kills the child and fails the attempt
+  "allowedAgents": [         // fail-closed: only these orchestrator agents may use the adapter
+    "developer-cloud", "coder-light", "coder-std",
+    "planner-local", "planner-cloud", "stratwriter-cloud"
+  ]
+}
+```
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `mode` | `"off" \| "shadow" \| "live"` | `"off"` | `off`: no interception. `shadow`: CLI runs fire-and-forget in parallel; its result is logged, the native tier result is returned. `live`: the CLI stdout **is** the producer artefact and goes through the gate. |
+| `tiers` | `string[]` | `[]` | Tier names intercepted by the adapter. All other tiers dispatch natively, including ladder escalation — a CLI failure on an adapter tier escalates to the next tier, which takes the native path if it is not listed. |
+| `binary` | `string` | `"opencode"` | Executable resolved via `PATH`; spawned with the project directory as cwd (`ctx.directory`, or `args.cwd` resolved against it). |
+| `args` | `string[]` | `["run"]` | Prepended before the task prompt. |
+| `timeoutMs` | `number` | `600000` | Per-invocation ceiling. On overrun the child is killed and the attempt fails (never an empty artefact a lenient DoD could pass). |
+| `allowedAgents` | `string[]` | `[]` | Orchestrator agent names permitted to use the adapter. Fail-closed: an unknown agent, a grader session, or an invocation with no session identity is refused, never guessed. The agent is memoised from `chat.message`. |
+
+**Recursion guards (two independent layers):** the child inherits `MODEL_ROUTER_OC_CHILD=1`, which
+forces the adapter off inside any OpenCode child process; and grader sessions are rejected at the
+intercept. A child/grader can never spawn another adapter CLI worker through this path.
+
+**Runtime switch:** `/router adapter off|shadow|live` — same persistence rules as `/router
+enforce` (state file wins over the override file; see the note at the top of this file).
+
+**Logging:** CLI results (shadow) and adapter failures log via `client.app.log` — tagged
+`opencode-adapter` in `~/.local/share/opencode/log/opencode.log`. Full per-session trajectory
+dumps (`MODEL_ROUTER_TRAJECTORY_DEBUG=1`) land in
+`$(tmpdir)/opencode-model-router-trajectory/<sessionID>.log`.
 
 ---
 

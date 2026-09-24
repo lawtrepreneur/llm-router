@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-09-24
+
+OpenCode itself becomes a routable tier worker. Issue #6, PR #9.
+
+### Added
+- **`opencodeAdapter`** config block (overrides file only; inert by default): runs the
+  `opencode` CLI as a tier worker for delegated tasks. Three modes — `off` (default),
+  `shadow` (CLI runs in parallel, result logged, native result returned), `live` (CLI stdout
+  is the producer artefact). Config reference: [OpenCode adapter](./docs/CONFIG_REFERENCE.md#opencode-adapter);
+  architecture: [ADR 0003](./docs/adr/0003-opencode-adapter.md).
+- **`/router adapter off|shadow|live`** runtime switch, persisted to the state file like
+  `/router enforce`.
+- **Two independent recursion guards:** the child inherits `MODEL_ROUTER_OC_CHILD=1` (forces
+  the adapter off inside any OpenCode child), and grader sessions are rejected at the
+  intercept. A child/grader can never spawn another adapter CLI worker.
+- **Fail-closed agent scoping:** `allowedAgents` names the orchestrator agents that may use
+  the adapter; unknown agents, graders, and sessionless invocations are refused.
+- CLI failures (non-zero exit, timeout, spawn error) are classified and fail the ladder
+  attempt — escalation to a non-adapter tier then takes the native path, so unverified CLI
+  output is never returned and the ladder's degradation guarantees hold.
+
 ## [1.12.1] - 2026-09-23
 
 The delegate instruction filter introduced in 1.12.0 never removed anything in a live
