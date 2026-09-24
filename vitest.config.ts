@@ -5,6 +5,8 @@ import { defineConfig } from "vitest/config";
 //   published package (files: ["src/", ...]) can never ship tests (plan C4).
 // - The default run excludes `test/smoke/**`: those are opt-in real-OpenCode
 //   smokes gated behind RUN_OC_SMOKE=1 (run via `npm run smoke`).
+// - `test/unit/classify-cli-roundtrip.test.ts` spawns the real classifier CLI
+//   subprocess; gated behind RUN_CLASSIFIER_CLI=1 (run via `npm run classify:gate`).
 // - Coverage source is `src/`. Thresholds are wired but intentionally left
 //   non-failing in Wave 0; they are turned on in Phase 5.1.
 export default defineConfig({
