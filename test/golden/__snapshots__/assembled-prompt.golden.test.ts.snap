@@ -20,7 +20,7 @@ dispatching the right tier, not by you becoming the explorer.
 
 ## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
@@ -30,7 +30,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→openai→google→github-copilot | openai→google→github-copilot | github-copilot→openai→google | google→openai→github-copilot | zai-coding-plan→openai→google
 
@@ -80,7 +80,7 @@ dispatching the right tier, not by you becoming the explorer.
 
 ## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
@@ -90,7 +90,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→openai→google→github-copilot | openai→google→github-copilot | github-copilot→openai→google | google→openai→github-copilot | zai-coding-plan→openai→google
 
@@ -104,7 +104,7 @@ This protocol overrides any project guide (CLAUDE.md, AGENTS.md, etc.) that says
 exports[`assembled-prompt golden > assembled-prompt-anthropic-model-openai > assembled-prompt-anthropic-model-openai 1`] = `
 "## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
@@ -114,7 +114,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→openai→google→github-copilot | openai→google→github-copilot | github-copilot→openai→google | google→openai→github-copilot | zai-coding-plan→openai→google
 
@@ -128,7 +128,7 @@ This protocol overrides any project guide (CLAUDE.md, AGENTS.md, etc.) that says
 exports[`assembled-prompt golden > assembled-prompt-anthropic-model-undefined > assembled-prompt-anthropic-model-undefined 1`] = `
 "## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: anthropic. Tiers: @fast=claude-sonnet-5(1x) @medium=claude-opus-5-5/high(5x) @heavy=claude-fable-5-1/max(20x).
 
@@ -138,7 +138,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→openai→google→github-copilot | openai→google→github-copilot | github-copilot→openai→google | google→openai→github-copilot | zai-coding-plan→openai→google
 
@@ -152,7 +152,7 @@ This protocol overrides any project guide (CLAUDE.md, AGENTS.md, etc.) that says
 exports[`assembled-prompt golden > assembled-prompt-openai-enforcement-on > assembled-prompt-openai-enforcement-on 1`] = `
 "## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
@@ -162,7 +162,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→google→github-copilot | openai→anthropic→google→github-copilot | github-copilot→anthropic→google | google→anthropic→github-copilot | zai-coding-plan→anthropic→google
 
@@ -212,7 +212,7 @@ dispatching the right tier, not by you becoming the explorer.
 
 ## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
@@ -222,7 +222,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→google→github-copilot | openai→anthropic→google→github-copilot | github-copilot→anthropic→google | google→anthropic→github-copilot | zai-coding-plan→anthropic→google
 
@@ -236,7 +236,7 @@ This protocol overrides any project guide (CLAUDE.md, AGENTS.md, etc.) that says
 exports[`assembled-prompt golden > assembled-prompt-openai-model-openai > assembled-prompt-openai-model-openai 1`] = `
 "## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
@@ -246,7 +246,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→google→github-copilot | openai→anthropic→google→github-copilot | github-copilot→anthropic→google | google→anthropic→github-copilot | zai-coding-plan→anthropic→google
 
@@ -260,7 +260,7 @@ This protocol overrides any project guide (CLAUDE.md, AGENTS.md, etc.) that says
 exports[`assembled-prompt golden > assembled-prompt-openai-model-undefined > assembled-prompt-openai-model-undefined 1`] = `
 "## Model Delegation Protocol (MANDATORY)
 
-You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.
+You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.
 
 Preset: openai. Tiers: @fast=gpt-6-luna-fast(1x) @medium=gpt-6-astra-fast/high(5x) @heavy=gpt-6-astra-fast/max(20x).
 
@@ -270,7 +270,7 @@ R: @fast→search/grep/read/git-info/ls/lookup-docs/types/count/exists-check/ren
 
 Multi-phase: prefer explore(@fast)→execute(@medium) when phases are separable. Cheapest-first when practical.
 
-Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, skip-delegate 6.orchestrator self-cap (TARGET): ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
+Rules: 1.[tier:X] tag in plan → delegate to X 2.plan:fast/cheap→@fast | plan:medium→@medium | plan:heavy→@heavy 3.default preference: read-only work → @fast; implementation → @medium 4.orchestrate=self, execute=subagent (info-gathering IS execution, not orchestration) 5.trivial (≤1 tool call, no expected follow-up) → direct, spent from the orchestrator read-only allowance 6.orchestrator read-only allowance (TARGET): dispatch is default; ≤2 direct read-only calls per turn; 3rd need → dispatch @fast (exceed only with 1-line reason) 7.dispatch caps baseline: @fast=CAP:8, @medium=CAP:5, @heavy=CAP:3 (omit directive = baseline; include CAP:N to override; CAP:none disables the cap only when the dispatch also carries a \`reason:\` line) 8.before dispatching @heavy: gather context first (usually via @fast); if context is already sufficient, dispatch directly 9.if self is opus: skip-@heavy (do locally); still prefer routing broader read-only exploration to @fast 10.min(cost, adequate-tier)
 
 Err→retry-alt-tier→fail→direct. Chain: anthropic→google→github-copilot | openai→anthropic→google→github-copilot | github-copilot→anthropic→google | google→anthropic→github-copilot | zai-coding-plan→anthropic→google
 
