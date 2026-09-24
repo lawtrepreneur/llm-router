@@ -113,7 +113,7 @@ export function buildDelegationProtocol(cfg: RouterConfig): string {
   return [
     `## Model Delegation Protocol (MANDATORY)`,
     ``,
-    `You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution, so dispatch it to @fast rather than running it yourself; cap yourself at about 2 direct read-only calls per turn and dispatch @fast on the 3rd. Synthesize the subagents' results and answer the user yourself.`,
+    `You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.`,
     ``,
     `Preset: ${cfg.activePreset}. Tiers: ${tierLine}.${modeSuffix}`,
     ``,

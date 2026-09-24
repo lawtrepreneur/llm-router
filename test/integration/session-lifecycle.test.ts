@@ -311,6 +311,71 @@ describe("child session lifecycle", () => {
     });
   });
 
+  describe("task prompt repair", () => {
+    const call = { tool: "task", sessionID: ORCHESTRATOR_SID, callID: "dispatch" };
+
+    it("leaves a call with a real prompt untouched", async () => {
+      loadConfig().dispatchHeader = false;
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: "fast", description: "greet", prompt: "Do the work" } };
+      const before = structuredClone(output);
+      await hooks["tool.execute.before"]!(call, output);
+      expect(output).toEqual(before);
+    });
+
+    it.each([undefined, null, "", "   \n"])("fills a missing prompt (%j) from the trimmed description", async (prompt) => {
+      loadConfig().dispatchHeader = false;
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: "fast", description: "  Reply to the greeting  ", ...(prompt === undefined ? {} : { prompt }) } };
+      await hooks["tool.execute.before"]!(call, output);
+      expect(output.args).toEqual({ subagent_type: "fast", description: "  Reply to the greeting  ", prompt: "Reply to the greeting" });
+    });
+
+    it("hands the repaired prompt to the dispatch header", async () => {
+      const cfg = loadConfig();
+      cfg.tierCaps = { ...cfg.tierCaps, fast: 11 };
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output: { args: Record<string, unknown> } = { args: { subagent_type: "fast", description: "Reply to the greeting" } };
+      await hooks["tool.execute.before"]!(call, output);
+      expect(output.args.prompt).toBe(buildDispatchHeader({ tier: "fast", cap: 11, projectDirectory: process.cwd() }) + "\n\n---\n\nReply to the greeting");
+    });
+
+    it.each([{}, { description: "" }, { description: "  " }, { description: 7 }])("refuses a call with no prompt and no usable description: %j", async (extra) => {
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const output = { args: { subagent_type: "fast", ...extra } };
+      const before = structuredClone(output);
+      await expect(hooks["tool.execute.before"]!(call, output)).rejects.toThrow(
+        "[router] This task call carried no prompt, and the task tool needs a non-empty `prompt` stating the work for the delegate. " +
+        "Re-issue the call with the work restated as an instruction in `prompt`. If the request carries no task at all " +
+        "(a greeting, an acknowledgement), do not delegate: answer it directly instead.",
+      );
+      expect(output).toEqual(before);
+    });
+
+    it("can be disabled by config, turning off both the repair and the refusal", async () => {
+      const cfg = loadConfig();
+      cfg.taskPromptRepair = false;
+      cfg.dispatchHeader = false;
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const repairable = { args: { subagent_type: "fast", description: "Reply to the greeting" } };
+      await hooks["tool.execute.before"]!(call, repairable);
+      expect(repairable.args).toEqual({ subagent_type: "fast", description: "Reply to the greeting" });
+      const refusable = { args: { subagent_type: "fast" } };
+      await expect(hooks["tool.execute.before"]!(call, refusable)).resolves.toBeUndefined();
+      expect(refusable.args).toEqual({ subagent_type: "fast" });
+    });
+
+    it("ignores other tools and does not throw on frozen args", async () => {
+      const hooks = await ModelRouterPlugin(makeHarness().ctx as PluginInput);
+      const other = { args: { description: "" } };
+      await expect(hooks["tool.execute.before"]!({ ...call, tool: "read" }, other)).resolves.toBeUndefined();
+      expect(other.args).toEqual({ description: "" });
+      const frozen = { args: Object.freeze({ subagent_type: "fast", description: "Reply to the greeting" }) };
+      await expect(hooks["tool.execute.before"]!(call, frozen)).resolves.toBeUndefined();
+      expect(frozen.args).toEqual({ subagent_type: "fast", description: "Reply to the greeting" });
+    });
+  });
+
   // -------------------------------------------------------------------------
   // parentID
   // -------------------------------------------------------------------------
