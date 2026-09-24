@@ -70,7 +70,8 @@ import { createIdleTtlSweeper } from "./router/idle-sweep";
 import { guardBeforeCall, guardAfterCall, formatScorecard } from "./guard/enforce";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, isAbsolute } from "node:path";
+import { join, isAbsolute, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { exec as nodeExec } from "node:child_process";
 import { access, readFile as fsReadFile } from "node:fs/promises";
 import { tool } from "@opencode-ai/plugin";
@@ -94,6 +95,8 @@ import {
   buildAcceptedSuffix,
 } from "./verify/dispatch";
 import { newLadderState, recordAttempt, nextAction, advance, buildEscalatePolicy, formatLadderScorecard } from "./escalate/ladder";
+import { runOpenCode } from "./adapter/opencode";
+import { shouldIntercept } from "./adapter/wiring";
 
 // ---------------------------------------------------------------------------
 // Re-exports — type-only re-exports for IDE/test consumers.
@@ -174,8 +177,36 @@ function buildRouterOutput(cfg: RouterConfig, args: string): string {
     });
   }
 
+  if (sub === "adapter") {
+    const requested = (tokens[1] ?? "").toLowerCase();
+    if (requested === "off" || requested === "shadow" || requested === "live") {
+      writeState({ opencodeAdapterMode: requested });
+      invalidateConfigCache();
+      return buildAdapterModeSet(requested);
+    }
+    return buildAdapterStatus(cfg);
+  }
+
   return buildRouterHelp(
     resolveEnforcementMode({ config: cfg, env: process.env }).mode,
+  );
+}
+
+/** `/router adapter` — persist mode, then render. */
+function buildAdapterModeSet(mode: string): string {
+  return `[router] opencode adapter mode: ${mode}`;
+}
+
+function buildAdapterStatus(cfg: RouterConfig): string {
+  const a = cfg.opencodeAdapter;
+  if (!a) return "[router] opencode adapter: off (no config)";
+  const tiers = a.tiers.length > 0 ? a.tiers.join(", ") : "(none)";
+  const agents = a.allowedAgents.length > 0 ? a.allowedAgents.join(", ") : "(none)";
+  return (
+    `[router] opencode adapter mode: ${a.mode}\n` +
+    `tiers: ${tiers}\n` +
+    `agents: ${agents}\n` +
+    `binary: ${a.binary} ${a.args.join(" ")} (timeout ${Math.round(a.timeoutMs / 1000)}s)`
   );
 }
 
@@ -367,6 +398,10 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   // current plugin lifetime (i.e., until OpenCode is restarted).
   let bypassed = false;
 
+  // chat.message carries input.agent but tool.execute.before does not, so the
+  // plugin-owned delegate tool can enforce its per-agent adapter allowlist.
+  const ocSessionAgents = new Map<string, string>();
+
   // Passive warnings go to opencode's log rather than stderr: console output
   // from a plugin paints over the TUI. Falls back to console when the server
   // has no /log endpoint. See src/router/logger.ts.
@@ -419,7 +454,8 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
 
   const enableDelegateTool =
     cfg.experimental?.verifiedDelegateTool === true ||
-    process.env.MODEL_ROUTER_VERIFIED_DELEGATE === "1";
+    process.env.MODEL_ROUTER_VERIFIED_DELEGATE === "1" ||
+    cfg.opencodeAdapter?.mode !== "off";
 
   return {
     // Warnings post to /log fire-and-forget, which loses the message when the
@@ -520,26 +556,53 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               const taskText = forcingNote
                 ? `${scrubText(forcingNote)}\n\n${args.task}`
                 : args.task;
-
-              const created: any = await ctx.client.session.create({
-                body: {
-                  ...(toolCtx?.sessionID ? { parentID: toolCtx.sessionID } : {}),
-                },
-              });
-              const producerSid: string | undefined = created?.data?.id;
-              if (!producerSid) return null;
-              producerSessions.push(producerSid);
+              const adapterMode = shouldIntercept(
+                activeCfg,
+                tier,
+                toolCtx?.sessionID ? ocSessionAgents.get(toolCtx.sessionID) : undefined,
+                { isGrader: !!toolCtx?.sessionID && graderSessions.has(toolCtx.sessionID) },
+              );
+              const adapterLive = adapterMode === "live";
+              if (adapterMode === "shadow") {
+                void runOpenCode(
+                  activeCfg.opencodeAdapter!,
+                  taskText,
+                  args.cwd ? resolve(ctx.directory, args.cwd) : ctx.directory,
+                ).then(
+                  result => logger.warn?.(`[opencode-adapter] shadow result for tier ${tier}: ${result.stdout.slice(0, 200)}`),
+                  error => logger.warn?.(`[opencode-adapter] shadow run failed: ${error instanceof Error ? error.message : String(error)}`),
+                );
+              }
+              let producerSid: string;
+              if (adapterLive) {
+                // CLI workers do not have a server-side session. This stable
+                // synthetic ID lets the existing baseline/gate path own their
+                // artefact without pretending it is a native child session.
+                producerSid = `opencode:${randomUUID()}`;
+              } else {
+                const created: any = await ctx.client.session.create({
+                  body: {
+                    ...(toolCtx?.sessionID ? { parentID: toolCtx.sessionID } : {}),
+                  },
+                });
+                const id: string | undefined = created?.data?.id;
+                if (!id) return null;
+                producerSid = id;
+                producerSessions.push(producerSid);
+              }
               // Keep the ORIGINAL dispatch reference across retries/escalations:
               // recapturing after a failed attempt would excuse its regression.
               if (!baselineID) {
                 baselineID = producerSid;
                 beginVerification(changedFileStore, baselineID, args.cwd, dod);
               }
-              // Compose with Layer 1: guard the plugin-created producer session.
-              try {
-                sessionStore.registerProducerSession(producerSid, tier, activeCfg);
-              } catch {
-                // non-fatal
+              if (!adapterLive) {
+                // Compose with Layer 1: guard the plugin-created producer session.
+                try {
+                  sessionStore.registerProducerSession(producerSid, tier, activeCfg);
+                } catch {
+                  // non-fatal
+                }
               }
 
               const model = tierModel(activeCfg, tier) ?? undefined;
@@ -558,22 +621,31 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               // is never an empty artefact that a lenient DoD could pass.
               let producerError: string | null = null;
               try {
-                const res: any = await withTimeout(
-                  ctx.client.session.prompt({
-                    path: { id: producerSid },
-                    body: {
-                      ...(model ? { model } : {}),
-                      ...(tier ? { agent: tier } : {}),
-                      parts: [{ type: "text", text: taskText }],
-                    },
-                  }),
-                  timeoutMs(
-                    activeCfg.enforcement?.verify?.delegateTimeoutMs,
-                    DEFAULT_DELEGATE_PROMPT_TIMEOUT_MS,
-                  ),
-                  "delegate producer prompt",
-                );
-                producerText = extractAssistantText(res);
+                if (adapterLive) {
+                  const result = await runOpenCode(
+                    activeCfg.opencodeAdapter!,
+                    taskText,
+                    args.cwd ? resolve(ctx.directory, args.cwd) : ctx.directory,
+                  );
+                  producerText = result.stdout;
+                } else {
+                  const res: any = await withTimeout(
+                    ctx.client.session.prompt({
+                      path: { id: producerSid },
+                      body: {
+                        ...(model ? { model } : {}),
+                        ...(tier ? { agent: tier } : {}),
+                        parts: [{ type: "text", text: taskText }],
+                      },
+                    }),
+                    timeoutMs(
+                      activeCfg.enforcement?.verify?.delegateTimeoutMs,
+                      DEFAULT_DELEGATE_PROMPT_TIMEOUT_MS,
+                    ),
+                    "delegate producer prompt",
+                  );
+                  producerText = extractAssistantText(res);
+                }
               } catch (error) {
                 producerError =
                   error instanceof Error ? error.message : String(error);
@@ -790,6 +862,9 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
       } catch {
         // best-effort maintenance: never break a real turn
       }
+      if (input?.sessionID && typeof input?.agent === "string") {
+        ocSessionAgents.set(input.sessionID, input.agent);
+      }
       const tierNames = Object.keys(getActiveTiers(cfg));
       const sid = input?.sessionID;
       try {
@@ -968,6 +1043,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
       } catch {
         // Best-effort: malformed args or debug I/O must never break a dispatch.
       }
+
       const sid = input?.sessionID;
       if (!sid || !sessionStore.isSubagent(sid) || typeof input?.tool !== "string") {
         return;
@@ -1010,6 +1086,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
     // -----------------------------------------------------------------------
     "tool.execute.after": async (input: any, output: any) => {
       if (bypassed) return;
+
       sessionStore.recordToolCall(input, output);
 
       // Best-effort false-refusal observation alongside the existing guard path.
@@ -1187,6 +1264,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
           if (typeof id === "string") {
             sessionRootMemo.delete(id);
             sessionLookupFailedAt.delete(id);
+            ocSessionAgents.delete(id);
             sessionStore.unregister(id);
           }
         } catch {
