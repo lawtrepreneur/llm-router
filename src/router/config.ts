@@ -193,6 +193,11 @@ export interface RouterConfig {
   tierCaps?: Record<string, number>;
   enforcement?: EnforcementConfig;
   /**
+   * OpenCode-as-a-worker adapter. See {@link OpenCodeAdapterConfig}. Absent
+   * ⇒ the shipped default: mode "off", no tiers intercepted.
+   */
+  opencodeAdapter?: OpenCodeAdapterConfig;
+  /**
    * Claude-model anti-narration guardrail. When true, appends the anti-narration
    * clause to Claude orchestrator/tier prompts and runs the post-hoc narration
    * detector. Off by default: the clause costs ~162 tokens per Claude dispatch
@@ -220,6 +225,8 @@ export interface RouterState {
   activePreset?: string;
   activeMode?: string;
   enforcementMode?: "off" | "advisory" | "enforced";
+  /** Persisted adapter mode so /adapter survives restarts like /preset does. */
+  opencodeAdapterMode?: OpenCodeAdapterMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +545,86 @@ function validateDelegateInstructions(obj: Record<string, unknown>): void {
     throw new Error(
       "tiers.json: 'delegateInstructions' must be one of strip-global|strip-all|keep",
     );
+  }
+}
+
+/**
+ * OpenCode-as-a-worker adapter. `off` by default; shadow and live are opt-in
+ * via the override file. Tiers list is the dispatched tiers intercepted;
+ * allowedAgents is the orchestrator agents allowed to reach the adapter.
+ */
+export const OPENCODE_ADAPTER_MODES = ["off", "shadow", "live"] as const;
+export type OpenCodeAdapterMode = (typeof OPENCODE_ADAPTER_MODES)[number];
+
+export interface OpenCodeAdapterConfig {
+  mode: OpenCodeAdapterMode;
+  tiers: string[];
+  binary: string;
+  args: string[];
+  timeoutMs: number;
+  allowedAgents: string[];
+}
+
+export const DEFAULT_OPENCODE_ADAPTER: OpenCodeAdapterConfig = {
+  mode: "off",
+  tiers: [],
+  binary: "opencode",
+  args: ["run"],
+  timeoutMs: 600_000,
+  allowedAgents: [],
+};
+
+function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
+  if (obj.opencodeAdapter === undefined) return;
+  const a = obj.opencodeAdapter;
+  if (typeof a !== "object" || a === null || Array.isArray(a)) {
+    throw new Error("tiers.json: 'opencodeAdapter' must be an object");
+  }
+  const adapter = a as Record<string, unknown>;
+  if (adapter.mode !== undefined && !OPENCODE_ADAPTER_MODES.includes(adapter.mode as OpenCodeAdapterMode)) {
+    throw new Error(
+      "tiers.json: 'opencodeAdapter.mode' must be one of off|shadow|live",
+    );
+  }
+  if (adapter.tiers !== undefined) {
+    if (
+      !Array.isArray(adapter.tiers) ||
+      adapter.tiers.some((t) => typeof t !== "string")
+    ) {
+      throw new Error(
+        "tiers.json: 'opencodeAdapter.tiers' must be an array of tier names",
+      );
+    }
+  }
+  if (adapter.binary !== undefined && (typeof adapter.binary !== "string" || !adapter.binary)) {
+    throw new Error("tiers.json: 'opencodeAdapter.binary' must be a non-empty string");
+  }
+  if (adapter.args !== undefined) {
+    if (
+      !Array.isArray(adapter.args) ||
+      adapter.args.some((a) => typeof a !== "string")
+    ) {
+      throw new Error("tiers.json: 'opencodeAdapter.args' must be an array of strings");
+    }
+  }
+  if (adapter.timeoutMs !== undefined) {
+    if (
+      typeof adapter.timeoutMs !== "number" ||
+      !Number.isInteger(adapter.timeoutMs) ||
+      adapter.timeoutMs < 1000
+    ) {
+      throw new Error("tiers.json: 'opencodeAdapter.timeoutMs' must be an integer >= 1000");
+    }
+  }
+  if (adapter.allowedAgents !== undefined) {
+    if (
+      !Array.isArray(adapter.allowedAgents) ||
+      adapter.allowedAgents.some((a) => typeof a !== "string")
+    ) {
+      throw new Error(
+        "tiers.json: 'opencodeAdapter.allowedAgents' must be an array of agent names",
+      );
+    }
   }
 }
 
@@ -939,6 +1026,7 @@ export function validateConfig(raw: unknown): RouterConfig {
   validateDispatchHeader(obj);
   validateTaskPromptRepair(obj);
   validateFalseRefusalDetection(obj);
+  validateOpenCodeAdapter(obj);
 
   return raw as RouterConfig;
 }
@@ -1057,6 +1145,8 @@ function applyTierDefaults(cfg: RouterConfig): void {
       if (tier.steps === undefined) tier.steps = d.steps;
     }
   }
+  // Adapter block always present so consumers never null-check it.
+  cfg.opencodeAdapter = { ...DEFAULT_OPENCODE_ADAPTER, ...(cfg.opencodeAdapter ?? {}) };
 }
 
 export function loadConfig(): RouterConfig {
@@ -1120,6 +1210,13 @@ export function loadConfig(): RouterConfig {
       }
       if (state.enforcementMode) {
         cfg.enforcement = { ...(cfg.enforcement ?? {}), mode: state.enforcementMode };
+      }
+      if (state.opencodeAdapterMode) {
+        cfg.opencodeAdapter = {
+          ...DEFAULT_OPENCODE_ADAPTER,
+          ...(cfg.opencodeAdapter ?? {}),
+          mode: state.opencodeAdapterMode,
+        };
       }
     }
   } catch {
