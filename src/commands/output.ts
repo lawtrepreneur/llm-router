@@ -211,13 +211,15 @@ export function buildOverridesOutput(v: OverridesView): string {
 }
 
 /** Bare `/router`. */
-export function buildRouterHelp(current: string): string {
+export function buildRouterHelp(current: string, adapterMode?: string): string {
   return [
     `# Model Router`,
     `Enforcement: **${current}**`,
+    ...(adapterMode ? [`Adapter: **${adapterMode}**`] : []),
     "",
     "Commands:",
     "- `/router enforce <off|advisory|enforced>` — set hard-block enforcement (persisted)",
+    "- `/router adapter <off|shadow|live>` — set OpenCode CLI adapter mode (persisted)",
     "- `/router overrides` — show the global + project override file paths and precedence",
     "- `/router models [provider]` — list valid model ids from your configured providers",
     "- `/tiers`, `/preset`, `/budget`, `/bypass`, `/annotate-plan`",

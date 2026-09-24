@@ -189,6 +189,7 @@ function buildRouterOutput(cfg: RouterConfig, args: string): string {
 
   return buildRouterHelp(
     resolveEnforcementMode({ config: cfg, env: process.env }).mode,
+    cfg.opencodeAdapter?.mode,
   );
 }
 
