@@ -429,6 +429,7 @@ explicit provider-specific fields are **not** gated by model family:
 and `reasoning_effort` / `reasoning_summary` whenever the matching `reasoning.*` field
 is set, without ever consulting `isClaudeModel` or `isOpenAIModel`
 (`src/router/agent-options.ts`). Only the `effort` branch checks the family.
+See [PER_TURN_EFFORT.md](./PER_TURN_EFFORT.md) for how this meets Claude Code 2.1.280's per-turn effort and the bundled `@medium` tier.
 
 Two consequences, both reachable from a valid `tiers.json`:
 
