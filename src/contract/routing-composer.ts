@@ -23,6 +23,7 @@
  */
 
 import type { RoutingChoice, RoutingDecision, RoutingFallback, RoutingRequest } from "./routing-decision";
+import { RECEIPT_SCHEMA_VERSION, stableHash, type RoutingReceipt } from "./routing-receipt";
 
 /** Composer contract version. Every evidence record is validated against this. */
 export const SCHEMA_VERSION = 1;
@@ -64,12 +65,14 @@ export interface EvidenceMeta {
 
 /** A scalar level dimension (complexity/risk). `value` is always present on a real answer. */
 export interface ScalarComposite extends EvidenceMeta {
-  value: ComplexityLevel | RiskLevel;
+  /** Broad at the structural boundary; dimension-specific validation narrows it. */
+  value: ComplexityLevel | RiskLevel | SpecialtyLevel;
 }
 
 /** The specialty answer — names one of the three levels, with an optional specialist tier slot. */
 export interface SpecialtyComposite extends EvidenceMeta {
-  value: SpecialtyLevel;
+  /** Broad at the structural boundary; validation enforces specialty values. */
+  value: ComplexityLevel | RiskLevel | SpecialtyLevel;
   tier?: string;
 }
 
@@ -93,6 +96,14 @@ export interface CompositeEvidence {
   availability?: GateComposite;
   permission?: GateComposite;
   phase?: PhaseComposite;
+  /** Calibration is explicit; raw pMax is never treated as calibrated confidence. */
+  calibration?: {
+    classifierVersion: string;
+    calibrationVersion: string;
+    temperature: number;
+    candidateProbabilities: Record<string, number>;
+    calibratedConfidence: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +186,7 @@ export function validateEvidence(evidence: unknown): string[] {
       if (raw !== SCHEMA_VERSION) errors.push(`composer evidence: schemaVersion ${String(raw)} != required ${SCHEMA_VERSION}`);
       continue;
     }
+    if (dimension === "calibration") continue;
     if (!(EVIDENCE_DIMENSIONS as readonly string[]).includes(dimension)) {
       errors.push(`composer evidence: '${dimension}' is not a known dimension`);
       continue;
@@ -203,7 +215,9 @@ export function validateEvidence(evidence: unknown): string[] {
 
     // probabilities must be present and every element finite within [0,1].
     const probs: unknown = rec.probabilities;
-    if (probs !== undefined) {
+    if (probs === undefined) {
+      errors.push(`composer evidence: '${dimension}' probabilities are required`);
+    } else {
       if (!Array.isArray(probs) || probs.length === 0) {
         errors.push(`composer evidence: '${dimension}' probabilities must be a non-empty array`);
       } else {
@@ -236,6 +250,32 @@ export function validateEvidence(evidence: unknown): string[] {
       const gates = rec.gates;
       if (typeof gates !== "object" || gates === null || Array.isArray(gates) || Object.values(gates).some(v => typeof v !== "boolean")) {
         errors.push(`composer evidence: '${dimension}' gates must be candidate-keyed booleans`);
+      }
+    }
+  }
+
+  const calibration = root.calibration;
+  if (typeof calibration !== "object" || calibration === null || Array.isArray(calibration)) {
+    errors.push("composer evidence: explicit calibration evidence is required");
+  } else {
+    const c = calibration as Record<string, unknown>;
+    for (const key of ["classifierVersion", "calibrationVersion"] as const) {
+      if (typeof c[key] !== "string" || c[key].length === 0) errors.push(`composer calibration: ${key} is required`);
+    }
+    for (const key of ["temperature", "calibratedConfidence"] as const) {
+      if (typeof c[key] !== "number" || !Number.isFinite(c[key]) || (key === "calibratedConfidence" && (c[key] < 0 || c[key] > 1)) || (key === "temperature" && c[key] <= 0)) {
+        errors.push(`composer calibration: ${key} must be a valid non-zero value`);
+      }
+    }
+    const probabilities = c.candidateProbabilities;
+    if (typeof probabilities !== "object" || probabilities === null || Array.isArray(probabilities)) {
+      errors.push("composer calibration: candidateProbabilities is required");
+    } else {
+      const values = Object.values(probabilities);
+      if (!values.length || values.some(p => typeof p !== "number" || !Number.isFinite(p) || p < 0 || p > 1)) {
+        errors.push("composer calibration: candidateProbabilities must contain finite values in [0,1]");
+      } else if (Math.abs(values.reduce((sum, p) => sum + p, 0) - 1) > 1e-9) {
+        errors.push("composer calibration: candidateProbabilities must sum to 1");
       }
     }
   }
@@ -386,6 +426,15 @@ function validateRegistry(registry: CandidateRegistry, evidence: CompositeEviden
     for (const id of Object.keys(gates ?? {})) if (!ids.includes(id)) errors.push(`${dimension} evidence contains unknown candidate '${id}'`);
     const probabilities = evidence[dimension]?.probabilities;
     if (probabilities && probabilities.length !== ids.length) errors.push(`${dimension} probability vector length must match candidate count`);
+  }
+  const calibration = evidence.calibration;
+  if (calibration) {
+    for (const id of Object.keys(calibration.candidateProbabilities ?? {})) {
+      if (!ids.includes(id)) errors.push(`calibration evidence contains unknown candidate '${id}'`);
+    }
+    if (Object.keys(calibration.candidateProbabilities ?? {}).length !== ids.length) {
+      errors.push("calibration probability vector must contain every candidate");
+    }
   }
   return errors;
 }
@@ -553,7 +602,7 @@ export function composeToDecision(
     const sorted = candidatesForTier.slice().sort(idOrder);
     const chosenId = sorted[0];
     const entry = registry.candidates[chosenId];
-    return okDecision({ ...req }, norm, tierRank(target), tier, chosenId, entry!, overrides, registry, decidedAt);
+    return okDecision({ ...req }, evidence, norm, tierRank(target), tier, chosenId, entry!, overrides, registry, decidedAt);
   }
 
   // No eligible candidate at/above target → escalate.
@@ -585,6 +634,7 @@ function failDecision(
 
 function okDecision(
   req: RoutingRequest,
+  evidence: CompositeEvidence,
   norm: NormalizedEvidence,
   _targetRank: number,
   tier: TierName,
@@ -596,7 +646,7 @@ function okDecision(
 ): RoutingDecision {
   const conf = typeof norm.complexity?.confidence === "number" ? norm.complexity.confidence : 0;
   return buildDecision(
-    {} as CompositeEvidence,
+    evidence,
     registry,
     req,
     { tier, confidence: conf, reason: `lowest eligible candidate ${chosenId} (${entry.tier}) at/above target tier`, metadata: { id: chosenId } },
@@ -614,7 +664,7 @@ interface DecisionParts {
 }
 
 function buildDecision(
-  _evidence: CompositeEvidence | undefined,
+  evidence: CompositeEvidence | undefined,
   registry: CandidateRegistry | undefined,
   req: RoutingRequest,
   parts: DecisionParts,
@@ -648,8 +698,52 @@ function buildDecision(
       fallback: parts.tier ? undefined : info?.fallback,
     },
   };
+  decision.receipt = makeReceipt(decision.receipt, evidence, registry, selected?.metadata?.id as string | undefined);
   decision.explanation = explanation;
   return decision;
+}
+
+function makeReceipt(
+  base: RoutingDecision["receipt"],
+  evidence: CompositeEvidence | undefined,
+  registry: CandidateRegistry | undefined,
+  selectedId: string | undefined,
+): RoutingReceipt {
+  const ids = registry ? Object.keys(registry.candidates).sort(idOrder) : [];
+  const probabilities = evidence?.calibration?.candidateProbabilities ?? {};
+  const values = Object.values(probabilities);
+  const pMax = values.length ? Math.max(...values) : 0;
+  const dimensions = Object.fromEntries(Object.entries(evidence ?? {}).filter(([key]) => key !== "schemaVersion" && key !== "calibration").map(([key, value]) => [key, {
+    value: typeof value === "object" && value !== null && "value" in value ? String((value as { value: unknown }).value) : undefined,
+    confidence: typeof value === "object" && value !== null && typeof (value as { confidence?: unknown }).confidence === "number" ? (value as { confidence: number }).confidence : 0,
+      probabilities: typeof value === "object" && value !== null && Array.isArray((value as { probabilities?: unknown }).probabilities) ? (value as { probabilities: number[] }).probabilities : [],
+  }])) as RoutingReceipt["dimensions"];
+  const calibration = evidence?.calibration;
+  const unavailableCandidates = ids.filter(id => evidence?.availability?.gates[id] !== true);
+  const filteredCandidates = ids.filter(id => evidence?.permission?.gates[id] !== true);
+  return {
+    ...base,
+    schemaVersion: RECEIPT_SCHEMA_VERSION,
+    schemaHash: stableHash({ schemaVersion: RECEIPT_SCHEMA_VERSION, dimensions: Object.keys(dimensions).sort() }),
+    candidateRegistryVersion: registry?.schemaVersion ?? 0,
+    candidateRegistryHash: stableHash(registry ?? {}),
+    classifierVersion: calibration?.classifierVersion ?? "unknown",
+    calibrationVersion: calibration?.calibrationVersion ?? "unknown",
+    calibrationTemperature: calibration?.temperature ?? 0,
+    candidateProbabilities: probabilities,
+    pMax,
+    calibratedConfidence: calibration?.calibratedConfidence ?? 0,
+    selectedNextMargin: selectedId ? selectedMargin(probabilities, selectedId) : 0,
+    unavailableCandidates,
+    filteredCandidates,
+    dimensions,
+  };
+}
+
+function selectedMargin(probabilities: Record<string, number>, selectedId: string): number {
+  const selected = probabilities[selectedId];
+  const next = Math.max(0, ...Object.entries(probabilities).filter(([id]) => id !== selectedId).map(([, probability]) => probability));
+  return selected - next;
 }
 
 function tierRank(tier: TierName): number {

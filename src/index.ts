@@ -1,4 +1,6 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
+import { homedir } from "node:os";
+import { createReceiptStore } from "./receipts/store";
 
 // Imports for internal use within this module
 import {
@@ -98,6 +100,7 @@ import { newLadderState, recordAttempt, nextAction, advance, buildEscalatePolicy
 import { runOpenCode } from "./adapter/opencode";
 import { shouldIntercept } from "./adapter/wiring";
 import { canExecuteRoute, decideRoute } from "./router/boundary";
+import { loadEvalGate } from "./receipts/store";
 
 // ---------------------------------------------------------------------------
 // Re-exports — type-only re-exports for IDE/test consumers.
@@ -180,7 +183,16 @@ function buildRouterOutput(cfg: RouterConfig, args: string): string {
 
   if (sub === "adapter") {
     const requested = (tokens[1] ?? "").toLowerCase();
+    if (requested === "rollback") {
+      writeState({ opencodeAdapterMode: "off" });
+      invalidateConfigCache();
+      return "[router] all adapters rolled back to off";
+    }
     if (requested === "off" || requested === "shadow" || requested === "live") {
+      if (requested === "live") {
+        const gatePath = process.env.MODEL_ROUTER_EVAL_GATE;
+        if (!gatePath || !loadEvalGate(gatePath)?.passed) return "[router] live adapter blocked: evaluation gate has not passed";
+      }
       writeState({ opencodeAdapterMode: requested });
       invalidateConfigCache();
       return buildAdapterModeSet(requested);
@@ -633,6 +645,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               }
 
               const model = tierModel(activeCfg, tier) ?? undefined;
+              const startedAt = Date.now();
               let producerText = "";
               // Provider-failover vs quality-escalation precedence (Phase 3.3):
               // Provider-failover is advisory only — a text chain injected into the orchestrator
@@ -649,7 +662,6 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               let producerError: string | null = null;
               try {
                 if (adapterLive) {
-                  const startedAt = Date.now();
                   logLiveAdapter(
                     `opencode adapter spawn start tier=${tier} agent=${selectedAgent ?? "unknown"}`,
                   );
@@ -767,6 +779,13 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                 );
               }
 
+              const receiptDir = process.env.MODEL_ROUTER_RECEIPTS_DIR ?? join(homedir(), ".config", "opencode-model-router");
+              createReceiptStore(join(receiptDir, "routing-receipts.jsonl")).append({
+                kind: "routing", version: 1, id: `route-${Date.now()}-${tier}`, timestamp: new Date().toISOString(),
+                intendedTarget: tier, actualTarget: tier, escalation: { occurred: state.totalAttempts > 0, count: state.totalAttempts },
+                verification: { status: gateRes.accepted ? "passed" : "failed", method: "router-gate" }, latencyMs: Date.now() - startedAt,
+                outcome: gateRes.accepted ? "accepted" : "failed", policyVersion: String(activeCfg.activePreset), registryVersion: "native", adapterMode: adapterLive ? "live" : "shadow",
+              });
               // Per-attempt cleanup (drop producer session tracking + state).
               if (producerSid !== baselineID) changedFileStore.clear(producerSid);
               try {

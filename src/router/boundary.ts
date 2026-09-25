@@ -5,6 +5,7 @@ import type {
 } from "../contract/routing-decision";
 import { composeToDecision } from "../contract/routing-composer";
 import type { CandidateRegistry, CompositeEvidence } from "../contract/routing-composer";
+import { canExecuteRoutingDecision } from "../contract/routing-receipt";
 
 /** Shared evidence-to-decision surface; native decideRoute remains unchanged. */
 export function decideRouteFromEvidence(
@@ -23,6 +24,8 @@ export type RouteChooser = (
 
 export type RouteBoundaryOptions = {
   confidenceThreshold?: number;
+  minMargin?: number;
+  minCalibratedConfidence?: number;
   now?: () => string;
   requestId?: string;
   taskId?: string;
@@ -35,8 +38,11 @@ export type RouteBoundaryOptions = {
   };
 };
 
-export function canExecuteRoute(decision: RoutingDecision): boolean {
-  return (
+export function canExecuteRoute(
+  decision: RoutingDecision,
+  options: Pick<RouteBoundaryOptions, "minMargin" | "minCalibratedConfidence"> = {},
+): boolean {
+  const legacyGate = (
     !decision.fallback &&
     !!decision.choice &&
     Number.isFinite(decision.choice.confidence) &&
@@ -45,6 +51,11 @@ export function canExecuteRoute(decision: RoutingDecision): boolean {
     decision.choice.confidence >= decision.receipt.confidence &&
     decision.receipt.mode === "live"
   );
+  // Keep legacy native receipts executable, but never bypass validation once a
+  // versioned receipt is present.
+  return decision.receipt.schemaVersion === undefined
+    ? legacyGate
+     : legacyGate && canExecuteRoutingDecision(decision, options);
 }
 
 /**

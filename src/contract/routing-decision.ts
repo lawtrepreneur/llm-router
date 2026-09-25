@@ -35,6 +35,21 @@ export type RoutingReceiptMetadata = {
   fallback?: RoutingFallback;
   mode: "live" | "shadow";
   producer?: Record<string, unknown>;
+  /** Issue #11 versioned, secret-free evidence receipt. */
+  schemaVersion?: number;
+  schemaHash?: string;
+  candidateRegistryVersion?: number;
+  candidateRegistryHash?: string;
+  classifierVersion?: string;
+  calibrationVersion?: string;
+  calibrationTemperature?: number;
+  candidateProbabilities?: Record<string, number>;
+  pMax?: number;
+  calibratedConfidence?: number;
+  selectedNextMargin?: number;
+  unavailableCandidates?: string[];
+  filteredCandidates?: string[];
+  dimensions?: Record<string, { value?: string; confidence: number; probabilities?: number[] }>;
 };
 
 export interface EvidenceExplanation {

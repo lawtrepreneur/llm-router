@@ -34,17 +34,18 @@ function gates(ids: string[], allow: boolean): Record<string, boolean> {
 
 /** Minimal valid ScalarComposite */
 function scalar(value: "low" | "medium" | "high", confidence = 0.9) {
-  return { value, confidence, reason: "test", version: SCHEMA_VERSION } as const;
+  return { value, confidence, probabilities: [0.1, 0.8, 0.1], reason: "test", version: SCHEMA_VERSION };
 }
 
 /** Minimal valid GateComposite */
 function gate(gateMap: Record<string, boolean>, confidence = 0.9) {
-  return { gates: gateMap, confidence, reason: "test", version: SCHEMA_VERSION } as const;
+  const probabilities = Object.keys(gateMap).length === 1 ? [1] : [0.1, 0.8, 0.1];
+  return { gates: gateMap, confidence, probabilities, reason: "test", version: SCHEMA_VERSION };
 }
 
 /** Valid specialty evidence */
 function specialty(value: "none" | "registered" | "unknown", tier?: string, confidence = 0.9) {
-  return { value, tier, confidence, reason: "test", version: SCHEMA_VERSION } as const;
+  return { value, tier, confidence, probabilities: [0.1, 0.8, 0.1], reason: "test", version: SCHEMA_VERSION };
 }
 
 /** Fully valid evidence for all 5 required dimensions */
@@ -57,6 +58,13 @@ function validEvidence(overrides: Partial<CompositeEvidence> = {}): CompositeEvi
     specialty: specialty("none"),
     availability: gate(gates(ids, true)),
     permission: gate(gates(ids, true)),
+    calibration: {
+      classifierVersion: "fixture-classifier-v1",
+      calibrationVersion: "fixture-calibration-v1",
+      temperature: 1,
+      calibratedConfidence: 0.9,
+      candidateProbabilities: { "fast-1": 0.1, "medium-1": 0.8, "heavy-1": 0.1 },
+    },
     ...overrides,
   };
 }
@@ -193,13 +201,13 @@ describe("permission dimension alone", () => {
 
 describe("phase dimension alone", () => {
   it("phase=planning → no extra floor", () => {
-    const ev = validEvidence({ phase: { value: "planning", version: SCHEMA_VERSION, confidence: 0.9, reason: "test" } });
+    const ev = validEvidence({ phase: { value: "planning", version: SCHEMA_VERSION, confidence: 0.9, probabilities: [1], reason: "test" } });
     const d = composeToDecision(ev, threeRegistry);
     expect(d.choice).toBeDefined();
   });
 
   it("phase=execution → no extra floor (no mixed rule)", () => {
-    const ev = validEvidence({ complexity: scalar("low"), phase: { value: "execution", version: SCHEMA_VERSION, confidence: 0.9, reason: "test" } });
+    const ev = validEvidence({ complexity: scalar("low"), phase: { value: "execution", version: SCHEMA_VERSION, confidence: 0.9, probabilities: [1], reason: "test" } });
     const d = composeToDecision(ev, threeRegistry);
     expect(d.choice?.tier).toBe("fast");
   });
@@ -214,7 +222,7 @@ describe("mixed phase", () => {
     const ev = validEvidence({
       complexity: scalar("low"),
       risk: scalar("low"),
-      phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.9, reason: "test" },
+      phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.9, probabilities: [1], reason: "test" },
     });
     const d = composeToDecision(ev, threeRegistry);
     expect(d.choice?.tier).toBe("medium");
@@ -225,7 +233,7 @@ describe("mixed phase", () => {
   it("mixed phase does not downgrade a high-complexity result", () => {
     const ev = validEvidence({
       complexity: scalar("high"),
-      phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.9, reason: "test" },
+      phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.9, probabilities: [1], reason: "test" },
     });
     const d = composeToDecision(ev, threeRegistry);
     expect(d.choice?.tier).toBe("heavy");
@@ -345,7 +353,7 @@ describe("malformed evidence → fail upward", () => {
   });
 
   it("non-object dimension → no choice", () => {
-    const d = composeToDecision({ complexity: "bad" as unknown, risk: scalar("low") } as CompositeEvidence, threeRegistry);
+    const d = composeToDecision({ complexity: "bad" as unknown, risk: scalar("low") } as unknown as CompositeEvidence, threeRegistry);
     expect(d.choice).toBeUndefined();
   });
 
@@ -457,7 +465,7 @@ describe("low-confidence fail-closed", () => {
       validEvidence({ specialty: specialty("none", undefined, 0.69) }),
       validEvidence({ availability: gate(gates(["fast-1", "medium-1", "heavy-1"], true), 0.69) }),
       validEvidence({ permission: gate(gates(["fast-1", "medium-1", "heavy-1"], true), 0.69) }),
-      validEvidence({ phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.69, reason: "test" } }),
+      validEvidence({ phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.69, probabilities: [1], reason: "test" } }),
     ];
     for (const ev of cases) {
       const d = composeToDecision(ev, threeRegistry);
@@ -504,6 +512,7 @@ describe("missing target tier escalates, no downward substitution", () => {
       complexity: scalar("medium"),
       availability: gate({ "heavy-1": true }),
       permission: gate({ "heavy-1": true }),
+      calibration: { ...validEvidence().calibration!, candidateProbabilities: { "heavy-1": 1 } },
     });
     const d = composeToDecision(ev, heavyOnlyRegistry);
     expect(d.choice?.tier).toBe("heavy");
@@ -521,6 +530,7 @@ describe("missing target tier escalates, no downward substitution", () => {
       complexity: scalar("low"),
       availability: gate({ "fast-1": true }),
       permission: gate({ "fast-1": true }),
+      calibration: { ...validEvidence().calibration!, candidateProbabilities: { "fast-1": 1 } },
     });
     const d = composeToDecision(ev, fastOnlyRegistry);
     expect(d.choice?.tier).toBe("fast");
@@ -592,7 +602,7 @@ describe("explanation structure", () => {
   it("mixed-phase override appears in policyOverrides", () => {
     const ev = validEvidence({
       complexity: scalar("low"),
-      phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.9, reason: "test" },
+      phase: { value: "mixed", version: SCHEMA_VERSION, confidence: 0.9, probabilities: [1], reason: "test" },
     });
     const d = composeToDecision(ev, threeRegistry);
     const override = d.explanation?.policyOverrides.find((o) => o.stage === "phase-mixed");
@@ -638,9 +648,9 @@ describe("probability disagreement", () => {
 describe("phase validation and explicit fallback", () => {
   it("rejects unsupported phase, bad version, and non-finite confidence", () => {
     const invalid: CompositeEvidence[] = [
-      validEvidence({ phase: { value: "later" as "mixed", version: SCHEMA_VERSION, confidence: 0.9, reason: "bad" } }),
-      validEvidence({ phase: { value: "mixed", version: 2, confidence: 0.9, reason: "bad" } }),
-      validEvidence({ phase: { value: "mixed", version: SCHEMA_VERSION, confidence: Infinity, reason: "bad" } }),
+      validEvidence({ phase: { value: "later" as "mixed", version: SCHEMA_VERSION, confidence: 0.9, probabilities: [1], reason: "bad" } }),
+      validEvidence({ phase: { value: "mixed", version: 2, confidence: 0.9, probabilities: [1], reason: "bad" } }),
+      validEvidence({ phase: { value: "mixed", version: SCHEMA_VERSION, confidence: Infinity, probabilities: [1], reason: "bad" } }),
     ];
     for (const ev of invalid) {
       const decision = composeToDecision(ev, threeRegistry);
