@@ -182,6 +182,28 @@ describe("delegate → opencode adapter (live mode)", () => {
     expect(rec.producerPrompts).toBe(0);
   });
 
+  it("executes a confident native route when the adapter is off", async () => {
+    const marker = path.join(dir, "adapter-invoked");
+    writeOverrides(dir, {
+      opencodeAdapter: {
+        ...ADAPTER_CFG.opencodeAdapter,
+        mode: "off",
+        args: ["-c", `touch ${marker}`],
+      },
+      experimental: { verifiedDelegateTool: true },
+    });
+    const rec = newRecorder();
+    const hooks: any = await bootPlugin(dir, rec, "developer-cloud");
+    const result = await hooks.tool.delegate.execute(
+      { task: "do x", tier: "medium" },
+      { sessionID: "orchestrator-session" },
+    );
+
+    expect(result).toContain("native producer ran");
+    expect(rec.producerPrompts).toBe(1);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it("blocks adapter dispatch when MODEL_ROUTER_OC_CHILD is set", async () => {
     process.env[OC_CHILD_ENV] = "1";
     try {
