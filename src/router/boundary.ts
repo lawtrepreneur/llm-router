@@ -3,6 +3,18 @@ import type {
   RoutingDecision,
   RoutingRequest,
 } from "../contract/routing-decision";
+import { composeToDecision } from "../contract/routing-composer";
+import type { CandidateRegistry, CompositeEvidence } from "../contract/routing-composer";
+
+/** Shared evidence-to-decision surface; native decideRoute remains unchanged. */
+export function decideRouteFromEvidence(
+  evidence: CompositeEvidence,
+  registry: CandidateRegistry,
+  request: RoutingRequest = { prompt: "" },
+  decidedAt?: string,
+): RoutingDecision {
+  return composeToDecision(evidence, registry, request, decidedAt);
+}
 
 export type RouteChooser = (
   request: RoutingRequest,

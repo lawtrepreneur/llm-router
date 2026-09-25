@@ -7,6 +7,7 @@ export type RoutingRequest = {
 export type RoutingCandidate = {
   tier: string;
   score?: number;
+  confidence?: number;
   metadata?: Record<string, unknown>;
 };
 
@@ -36,6 +37,16 @@ export type RoutingReceiptMetadata = {
   producer?: Record<string, unknown>;
 };
 
+export interface EvidenceExplanation {
+  /** What each evidence dimension answered. */
+  evidenceSummary: Array<{ dimension: string; detail: string }>;
+}
+
+export interface PolicyExplanation {
+  /** Non-classifier stages that raised the tier above the raw signal. */
+  policyOverrides: ReadonlyArray<{ stage: string; reason: string; tier?: string }>;
+}
+
 export type RoutingDecision = {
   request: RoutingRequest;
   candidates: RoutingCandidate[];
@@ -44,4 +55,5 @@ export type RoutingDecision = {
   reason: string;
   fallback?: RoutingFallback;
   receipt: RoutingReceiptMetadata;
+  explanation?: EvidenceExplanation & PolicyExplanation;
 };
