@@ -328,7 +328,11 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
       calibration: cal3("medium-1"),
     },
     registry: STANDARD_REGISTRY,
-    expected: { selectedTier: null, fallbackAction: "escalate" },
+    expected: {
+      selectedTier: null,
+      fallbackAction: "escalate",
+      fallbackReasonPattern: /confidence.*below execution threshold/,
+    },
     riskLevel: "medium",
     rationale: "Confidence below 0.7 threshold forces escalation.",
   },
@@ -354,7 +358,11 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
       calibration: cal3("medium-1"),
     },
     registry: STANDARD_REGISTRY,
-    expected: { selectedTier: null, fallbackAction: "escalate" },
+    expected: {
+      selectedTier: null,
+      fallbackAction: "escalate",
+      fallbackReasonPattern: /complexity.*probabilities contain a value outside \[0,1\]/,
+    },
     riskLevel: "medium",
     rationale: "Non-finite probability fails validation → no choice.",
   },
@@ -380,7 +388,11 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
       calibration: cal3("fast-1"),
     },
     registry: STANDARD_REGISTRY,
-    expected: { selectedTier: null, fallbackAction: "escalate" },
+    expected: {
+      selectedTier: null,
+      fallbackAction: "escalate",
+      fallbackReasonPattern: /complexity.*probabilities contain a value outside \[0,1\]/,
+    },
     riskLevel: "low",
     rationale: "Out-of-range probability fails validation → no choice.",
   },
@@ -409,23 +421,32 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
     rationale: "Unknown specialty without a tier → escalate.",
   },
 
-  // ---- FX-013B: unknown-candidate family (schema mismatch) ------------------
+  // ---- FX-013B: unknown-candidate family (gate names an undeclared candidate) -
   {
     id: "FX-013B",
     family: "unknown-candidate",
-    request: { prompt: "Route a code review when the registry has a mismatched schema version." },
+    request: { prompt: "Route a code review when a gate references a candidate the registry does not declare." },
     evidence: {
       schemaVersion: SV,
       complexity: scalar("medium"),
       risk: scalar("low"),
       specialty: specialty("none"),
-      availability: gate3(true, true, true),
+      // availability gates include "ghost-1" which is NOT in the registry.
+      // validateRegistry emits: "availability evidence contains unknown candidate 'ghost-1'"
+      availability: {
+        gates: { "fast-1": true, "medium-1": true, "heavy-1": true, "ghost-1": false },
+        confidence: 0.9,
+        probabilities: [0.25, 0.25, 0.25, 0.25] as unknown as readonly number[],
+        reason: "fixture",
+        version: SV,
+      },
       permission: gate3(true, true, true),
       calibration: cal3("medium-1"),
     },
-    // Registry with wrong schemaVersion → validateRegistry will reject it.
+    // Valid schemaVersion; registry declares every registered candidate but the gate
+    // carries a candidate id absent from it. validateRegistry rejects the mismatch before any choice.
     registry: {
-      schemaVersion: SV + 1,
+      schemaVersion: SV,
       tiers: ["fast", "medium", "heavy"],
       candidates: {
         "fast-1":   { id: "fast-1",   tier: "fast"   },
@@ -433,9 +454,14 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
         "heavy-1":  { id: "heavy-1",  tier: "heavy"  },
       },
     },
-    expected: { selectedTier: null, fallbackAction: "escalate" },
+    expected: {
+      selectedTier: null,
+      fallbackAction: "escalate",
+      // Actual composer error: "availability evidence contains unknown candidate 'ghost-1'"
+      fallbackReasonPattern: /availability evidence contains unknown candidate 'ghost-1'/,
+    },
     riskLevel: "medium",
-    rationale: "Mismatched registry schema version fails validation → no choice.",
+    rationale: "Gate references an undeclared candidate → gate/registry unknown-candidate validation fails → no choice.",
   },
 
   // ---- FX-014: target tier unavailable → no eligible at/above target -------
@@ -453,7 +479,11 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
       calibration: cal3("heavy-1"),
     },
     registry: STANDARD_REGISTRY,
-    expected: { selectedTier: null, fallbackAction: "escalate" },
+    expected: {
+      selectedTier: null,
+      fallbackAction: "escalate",
+      fallbackReasonPattern: /no eligible candidate.*unavailable/,
+    },
     riskLevel: "medium",
     rationale: "High-complexity needs heavy but only fast is available → escalate.",
   },
@@ -473,7 +503,12 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
       calibration: cal3("heavy-1"),
     },
     registry: STANDARD_REGISTRY,
-    expected: { selectedTier: null, fallbackAction: "escalate", neverFast: true },
+    expected: {
+      selectedTier: null,
+      fallbackAction: "escalate",
+      fallbackReasonPattern: /no eligible candidate.*unauthorized/,
+      neverFast: true,
+    },
     riskLevel: "high",
     rationale: "No candidate passes permission gate → escalate.",
   },
@@ -493,7 +528,12 @@ export const E2E_FIXTURES: E2ERoutingFixture[] = [
       calibration: cal3("heavy-1"),
     },
     registry: STANDARD_REGISTRY,
-    expected: { selectedTier: null, fallbackAction: "escalate", neverFast: true },
+    expected: {
+      selectedTier: null,
+      fallbackAction: "escalate",
+      fallbackReasonPattern: /no eligible candidate.*unavailable.*unauthorized/,
+      neverFast: true,
+    },
     riskLevel: "high",
     rationale: "Zero eligible candidates → escalate.",
   },
