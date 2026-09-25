@@ -167,6 +167,9 @@ export function createVerificationWiring(deps: {
     // single delegate call. A plugin instance lives for the whole editor
     // session, so an unbounded Set would be a slow leak. Insertion order is
     // specified for Set, so dropping from the front evicts the oldest ids.
+    // Adapter workers are synthetic IDs (opencode:<uuid>), not server-side
+    // sessions — abort/delete makes the backend reject them. Nothing to clean.
+    if (sid.startsWith("opencode:")) return;
     if (disposed.size >= DISPOSED_MEMO_MAX) {
       let toDrop = disposed.size - DISPOSED_MEMO_MAX + 1;
       for (const old of disposed) {

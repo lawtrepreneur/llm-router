@@ -85,6 +85,23 @@ describe("shouldIntercept", () => {
 });
 
 describe("runOpenCode (real spawn)", () => {
+  it("passes the configured child agent before the prompt", async () => {
+    let argv: string[] | undefined;
+    await runOpenCode(
+      { binary: "opencode", args: ["run", "--auto"], timeoutMs: 5000 },
+      "inspect this",
+      process.cwd(),
+      {
+        exec: (async (_binary: string, args: readonly string[]) => {
+          argv = [...args];
+          return { stdout: "ok", stderr: "" };
+        }) as any,
+      },
+      "task-std",
+    );
+    expect(argv).toEqual(["run", "--auto", "--agent", "task-std", "inspect this"]);
+  });
+
   it("runs a trivial binary and returns stdout", async () => {
     const r = await runOpenCode(
         { binary: "echo", args: [], timeoutMs: 5000 },

@@ -134,6 +134,25 @@ describe("buildDelegationProtocol", () => {
     expect(out).toContain("R:"); // taxonomy present
     expect(out).toContain("Chain:"); // fallback present
   });
+  it.each(["shadow", "live"] as const)(
+    "routes tier dispatch through plugin delegate in %s adapter mode",
+    (mode) => {
+      const cfg = {
+        ...minimal,
+        opencodeAdapter: { mode },
+      } as unknown as RouterConfig;
+      const out = buildDelegationProtocol(cfg);
+      expect(out).toContain("plugin-provided `delegate` tool");
+      expect(out).toContain("passing `task` and `tier`");
+      expect(out).toContain("native `Task` tool");
+      expect(out).not.toContain('Task(subagent_type="fast"');
+    },
+  );
+  it("keeps native Task dispatch instructions when adapter is off", () => {
+    const out = buildDelegationProtocol(minimal);
+    expect(out).toContain('Task(subagent_type="fast"');
+    expect(out).toContain("several Task calls in one message");
+  });
 });
 
 describe("isClaudeModel", () => {

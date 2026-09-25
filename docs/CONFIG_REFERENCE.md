@@ -44,7 +44,7 @@ falls back to its in-code default), so you only ever see them in an overrides fi
 | `subagentTiers` | `Record<string, string>` | `{}` — no pre-existing agent is touched | Opt-in map of your own subagent names to tier names, repointing them at the active preset's model for that tier. Unknown tier names are skipped at resolve time rather than rejected. |
 | `antiNarration` | `boolean` | `false` | Adds the anti-narration clause to Claude tier prompts and enables the non-blocking narration detector. |
 | `experimental` | `{ verifiedDelegateTool?: boolean }` | `{}` — every experimental feature off | Opt-in features. `verifiedDelegateTool` exposes the independently-verified `delegate` tool, also settable via `MODEL_ROUTER_VERIFIED_DELEGATE=1`. |
-| `opencodeAdapter` | `OpenCodeAdapterConfig` | `{ mode: "off", tiers: [], binary: "opencode", args: ["run"], timeoutMs: 600000, allowedAgents: [] }` — adapter inert | Runs the OpenCode CLI as a tier worker through the verified delegate path. See [OpenCode adapter](#opencode-adapter) below and [ADR 0003](./adr/0003-opencode-adapter.md). |
+| `opencodeAdapter` | `OpenCodeAdapterConfig` | `{ mode: "off", tiers: [], binary: "opencode", args: ["run"], timeoutMs: 600000, allowedAgents: [], tierAgents: {} }` — adapter inert | Runs the OpenCode CLI as a tier worker through the verified delegate path. See [OpenCode adapter](#opencode-adapter) below and [ADR 0003](./adr/0003-opencode-adapter.md). |
 
 ---
 
@@ -60,8 +60,13 @@ never returned unverified. Architecture and rationale: [ADR 0003](./adr/0003-ope
   "mode": "shadow",          // "off" | "shadow" | "live"
   "tiers": ["medium"],       // which dispatched tiers the adapter intercepts
   "binary": "opencode",      // CLI binary; runOpenCode appends the task prompt as the final argument
-  "args": ["run"],           // prepended args
-  "timeoutMs": 600000,       // per-invocation ceiling; overrun kills the child and fails the attempt
+   "args": ["run", "--auto"], // prepended args; required for non-interactive child permissions
+   "timeoutMs": 600000,       // per-invocation ceiling; overrun kills the child and fails the attempt
+   "tierAgents": {            // OpenCode agents selected for each intercepted tier
+     "fast": "adminassist",
+     "medium": "task-std",
+     "heavy": "task-hvy"
+   },
   "allowedAgents": [         // fail-closed: only these orchestrator agents may use the adapter
     "developer-cloud", "coder-light", "coder-std",
     "planner-local", "planner-cloud", "stratwriter-cloud"
@@ -76,6 +81,7 @@ never returned unverified. Architecture and rationale: [ADR 0003](./adr/0003-ope
 | `binary` | `string` | `"opencode"` | Executable resolved via `PATH`; spawned with the project directory as cwd (`ctx.directory`, or `args.cwd` resolved against it). |
 | `args` | `string[]` | `["run"]` | Prepended before the task prompt. |
 | `timeoutMs` | `number` | `600000` | Per-invocation ceiling. On overrun the child is killed and the attempt fails (never an empty artefact a lenient DoD could pass). |
+| `tierAgents` | `Record<string, string>` | `{}` | Maps intercepted tiers to OpenCode agents; the adapter passes a mapped name as `--agent`. That OpenCode agent must use mode `primary` or `all` — `subagent` falls back to the default CLI agent. |
 | `allowedAgents` | `string[]` | `[]` | Orchestrator agent names permitted to use the adapter. Fail-closed: an unknown agent, a grader session, or an invocation with no session identity is refused, never guessed. The agent is memoised from `chat.message`. |
 
 **Recursion guards (two independent layers):** the child inherits `MODEL_ROUTER_OC_CHILD=1`, which

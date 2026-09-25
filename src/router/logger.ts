@@ -1,3 +1,4 @@
+// TODO: LOG_SERVICE constant is used as a log tag
 /**
  * Where the plugin's passive warnings go.
  *
@@ -40,6 +41,8 @@
  * `service=` anywhere, so grepping opencode's log for `service=model-router`
  * finds nothing even when the entry is there. Match on the message text.
  */
+
+// TODO: LOG_SERVICE constant is used as a log tag
 
 export interface PluginLogger {
   warn(message: string, extra?: Record<string, unknown>): void;

@@ -86,6 +86,9 @@ export function buildDecomposeHint(cfg: RouterConfig): string {
 
 export function buildDelegationProtocol(cfg: RouterConfig): string {
   const tiers = getActiveTiers(cfg);
+  const adapterActive =
+    cfg.opencodeAdapter?.mode === "shadow" ||
+    cfg.opencodeAdapter?.mode === "live";
 
   // Compact tier summary: @name=model/variant(costRatio)
   const tierLine = Object.entries(tiers)
@@ -109,11 +112,17 @@ export function buildDelegationProtocol(cfg: RouterConfig): string {
   const rulesLine = effectiveRules.map((r, i) => `${i + 1}.${r}`).join(" ");
 
   const fallback = buildFallbackInstructions(cfg);
+  const dispatchInstruction = adapterActive
+    ? `You are the orchestrator: route each task to the right tier and dispatch it with the plugin-provided \`delegate\` tool, passing \`task\` and \`tier\` (and \`acceptance\` or \`cwd\` when useful). Do not use the native \`Task\` tool for tier dispatches: it bypasses the OpenCode adapter. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize results and answer the user yourself.`
+    : `You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.`;
+  const dispatchBatchInstruction = adapterActive
+    ? `When dispatching: batch related @fast searches into one call and run independent ones in parallel (several \`delegate\` calls in one message); give @medium concrete context (paths, patterns, how to verify).`
+    : `When dispatching: batch related @fast searches into one call and run independent ones in parallel (several Task calls in one message); give @medium concrete context (paths, patterns, how to verify).`;
 
   return [
     `## Model Delegation Protocol (MANDATORY)`,
     ``,
-    `You are the orchestrator: route each task to the right tier and delegate it with \`Task(subagent_type="fast"|"medium"|"heavy", prompt="...")\`. Information-gathering (grep, read, glob, ls) is execution and goes to @fast by default; your one exception is an allowance of about 2 direct read-only calls per turn for lookups that settle a question outright, so dispatch @fast once you would exceed it. Synthesize the subagents' results and answer the user yourself.`,
+    dispatchInstruction,
     ``,
     `Preset: ${cfg.activePreset}. Tiers: ${tierLine}.${modeSuffix}`,
     ``,
@@ -124,7 +133,7 @@ export function buildDelegationProtocol(cfg: RouterConfig): string {
     `Rules: ${rulesLine}`,
     ...(fallback ? [``, fallback] : []),
     ``,
-    `When dispatching: batch related @fast searches into one call and run independent ones in parallel (several Task calls in one message); give @medium concrete context (paths, patterns, how to verify).`,
+    dispatchBatchInstruction,
     ``,
     `Per dispatch you may add \`CAP:N\` (or \`CAP:none\` with a \`reason:\` line — unjustified \`CAP:none\` is ignored) to change a subagent's read-only budget (baseline @fast=8, @medium=5, @heavy=3). Subagents return \`DONE:\`, \`NEED MORE:\`, or \`ESCALATE:\` for you to act on. @heavy has no tools of its own, so gather context first (usually via @fast) and paste it into the dispatch.`,
     ``,

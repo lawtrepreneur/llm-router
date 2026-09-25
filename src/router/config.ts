@@ -551,7 +551,8 @@ function validateDelegateInstructions(obj: Record<string, unknown>): void {
 /**
  * OpenCode-as-a-worker adapter. `off` by default; shadow and live are opt-in
  * via the override file. Tiers list is the dispatched tiers intercepted;
- * allowedAgents is the orchestrator agents allowed to reach the adapter.
+ * allowedAgents is the orchestrator agents allowed to reach the adapter;
+ * tierAgents selects the OpenCode child agent for each intercepted tier.
  */
 export const OPENCODE_ADAPTER_MODES = ["off", "shadow", "live"] as const;
 export type OpenCodeAdapterMode = (typeof OPENCODE_ADAPTER_MODES)[number];
@@ -563,6 +564,7 @@ export interface OpenCodeAdapterConfig {
   args: string[];
   timeoutMs: number;
   allowedAgents: string[];
+  tierAgents: Record<string, string>;
 }
 
 export const DEFAULT_OPENCODE_ADAPTER: OpenCodeAdapterConfig = {
@@ -572,6 +574,7 @@ export const DEFAULT_OPENCODE_ADAPTER: OpenCodeAdapterConfig = {
   args: ["run"],
   timeoutMs: 600_000,
   allowedAgents: [],
+  tierAgents: {},
 };
 
 function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
@@ -605,6 +608,18 @@ function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
       adapter.args.some((a) => typeof a !== "string")
     ) {
       throw new Error("tiers.json: 'opencodeAdapter.args' must be an array of strings");
+    }
+  }
+  if (adapter.tierAgents !== undefined) {
+    if (
+      typeof adapter.tierAgents !== "object" ||
+      adapter.tierAgents === null ||
+      Array.isArray(adapter.tierAgents) ||
+      Object.values(adapter.tierAgents as Record<string, unknown>).some(
+        agent => typeof agent !== "string" || !agent,
+      )
+    ) {
+      throw new Error("tiers.json: 'opencodeAdapter.tierAgents' must map tier names to non-empty agent names");
     }
   }
   if (adapter.timeoutMs !== undefined) {

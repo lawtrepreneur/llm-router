@@ -11,12 +11,36 @@
  * IMPURE: child_process. Kept isolated so index.ts stays testable by
  * injecting a fake run function.
  */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile, spawn } from "node:child_process";
 import { resolve } from "node:path";
 import type { OpenCodeAdapterConfig } from "../router/config";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = (
+  binary: string,
+  args: readonly string[],
+  options: Parameters<typeof execFile>[2] & { maxBuffer?: number },
+): Promise<{ stdout: string; stderr: string }> =>
+  new Promise((resolvePromise, reject) => {
+    const child = spawn(binary, [...args], { cwd: options?.cwd, env: options?.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const maxBuffer = options?.maxBuffer ?? 10 * 1024 * 1024;
+    const timer = setTimeout(() => child.kill("SIGTERM"), options?.timeout ?? 0);
+    child.stdout.on("data", chunk => {
+      stdout += chunk;
+      if (stdout.length > maxBuffer) child.kill("SIGTERM");
+    });
+    child.stderr.on("data", chunk => {
+      stderr += chunk;
+      if (stderr.length > maxBuffer) child.kill("SIGTERM");
+    });
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise({ stdout, stderr });
+      else reject(Object.assign(new Error(signal ? `terminated by ${signal}` : `exited with code ${code}`), { code, signal, stdout, stderr }));
+    });
+  });
 
 /** Env var set on spawned OpenCode children. Presence ⇒ recursion. */
 export const OC_CHILD_ENV = "MODEL_ROUTER_OC_CHILD";
@@ -67,6 +91,7 @@ export async function runOpenCode(
   prompt: string,
   cwd: string,
   deps: OpenCodeRunDeps = {},
+  agent?: string,
 ): Promise<OpenCodeRunResult> {
   if (isOcChild()) {
     throw new OpenCodeAdapterError(
@@ -79,7 +104,8 @@ export async function runOpenCode(
   const startedAt = deps.now?.() ?? Date.now();
 
   try {
-    const { stdout, stderr } = await exec(cfg.binary, [...cfg.args, prompt], {
+    const argv = [...cfg.args, ...(agent ? ["--agent", agent] : []), prompt];
+    const { stdout, stderr } = await exec(cfg.binary, argv, {
       timeout: cfg.timeoutMs,
       cwd: resolve(cwd),
       env: { ...process.env, [OC_CHILD_ENV]: "1" },

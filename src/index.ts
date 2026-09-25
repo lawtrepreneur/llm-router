@@ -97,6 +97,7 @@ import {
 import { newLadderState, recordAttempt, nextAction, advance, buildEscalatePolicy, formatLadderScorecard } from "./escalate/ladder";
 import { runOpenCode } from "./adapter/opencode";
 import { shouldIntercept } from "./adapter/wiring";
+import { canExecuteRoute, decideRoute } from "./router/boundary";
 
 // ---------------------------------------------------------------------------
 // Re-exports — type-only re-exports for IDE/test consumers.
@@ -407,6 +408,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
   // from a plugin paints over the TUI. Falls back to console when the server
   // has no /log endpoint. See src/router/logger.ts.
   const logger = createPluginLogger(ctx.client);
+  const logLiveAdapter = (message: string): void => logger.warn(`[opencode-adapter] ${message}`);
 
   // Fetch and normalize opencode's live provider/model catalog. Best-effort:
   // returns null when the client call fails, e.g. the server is not ready yet.
@@ -500,6 +502,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
           },
           toolCtx?: { sessionID?: string },
         ): Promise<string> {
+          logLiveAdapter(`delegate entry tier=${args.tier ?? "default"} session=${toolCtx?.sessionID ? "present" : "missing"}`);
           // Every ladder iteration creates its own producer session. Tracked out
           // here (not inside the try) so the finally below can dispose any that an
           // early return or a throw skipped — otherwise each retry leaks another.
@@ -557,21 +560,44 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               const taskText = forcingNote
                 ? `${scrubText(forcingNote)}\n\n${args.task}`
                 : args.task;
+              const routeCandidates = Object.keys(tiersForCost).map(routeTier => ({ tier: routeTier }));
+              const route = decideRoute(
+                { prompt: taskText, context: { requestedTier: tier } },
+                routeCandidates,
+                (_request, candidates) => {
+                  const candidate = candidates.find(candidate => candidate.tier === tier);
+                  return {
+                    candidate,
+                    confidence: candidate ? 1 : 0,
+                    reason: candidate ? "native tier selected" : `unknown tier: ${tier}`,
+                  };
+                },
+                {
+                  onDecision: decision =>
+                    logger.warn(`[routing-decision] ${JSON.stringify(decision.receipt)}`),
+                },
+              );
+              if (!canExecuteRoute(route)) return null;
+              const selectedRoute = route.choice;
+              if (!selectedRoute) return null;
+              tier = selectedRoute.tier;
+              const routedTier = selectedRoute.tier;
               const adapterMode = shouldIntercept(
                 activeCfg,
-                tier,
-                toolCtx?.sessionID ? ocSessionAgents.get(toolCtx.sessionID) : undefined,
+                routedTier,
+                toolCtx?.sessionID ? ocSessionAgents.get(toolCtx.sessionID!) : undefined,
                 { isGrader: !!toolCtx?.sessionID && graderSessions.has(toolCtx.sessionID) },
               );
               const adapterLive = adapterMode === "live";
+              const selectedAgent = activeCfg.opencodeAdapter?.tierAgents[routedTier];
+              if (adapterLive) {
+                logLiveAdapter(
+                  `opencode adapter decision tier=${routedTier} mode=${adapterMode} agent=${selectedAgent ? "known" : "unknown"}`,
+                );
+              }
               if (adapterMode === "shadow") {
-                void runOpenCode(
-                  activeCfg.opencodeAdapter!,
-                  taskText,
-                  args.cwd ? resolve(ctx.directory, args.cwd) : ctx.directory,
-                ).then(
-                  result => logger.warn?.(`[opencode-adapter] shadow result for tier ${tier}: ${result.stdout.slice(0, 200)}`),
-                  error => logger.warn?.(`[opencode-adapter] shadow run failed: ${error instanceof Error ? error.message : String(error)}`),
+                logger.warn?.(
+                  `[opencode-adapter] shadow intended route tier=${routedTier} receipt=${JSON.stringify(route.receipt)}`,
                 );
               }
               let producerSid: string;
@@ -623,10 +649,19 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               let producerError: string | null = null;
               try {
                 if (adapterLive) {
+                  const startedAt = Date.now();
+                  logLiveAdapter(
+                    `opencode adapter spawn start tier=${tier} agent=${selectedAgent ?? "unknown"}`,
+                  );
                   const result = await runOpenCode(
                     activeCfg.opencodeAdapter!,
                     taskText,
                     args.cwd ? resolve(ctx.directory, args.cwd) : ctx.directory,
+                    undefined,
+                    selectedAgent,
+                  );
+                  logLiveAdapter(
+                    `opencode adapter success tier=${tier} duration=${Date.now() - startedAt}ms`,
                   );
                   producerText = result.stdout;
                 } else {
@@ -650,6 +685,9 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               } catch (error) {
                 producerError =
                   error instanceof Error ? error.message : String(error);
+                if (adapterLive) {
+                  logLiveAdapter(`opencode adapter failure tier=${tier} error=${producerError}`);
+                }
                 producerText = "";
               }
 
@@ -805,8 +843,10 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               forcing = action.forcingMessage ?? null;
               state = advance(state, action);
             }
-          } catch {
-            return "[router] delegate failed (fail-closed): the delegation or verification could not complete.";
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logLiveAdapter(`delegate failure error=${message.slice(0, 300)}`);
+            return `[router] delegate failed (fail-closed): ${message}`;
           } finally {
             // Safety net for every exit path an end-of-iteration dispose cannot
             // reach: accept/give-up returns, the safety-net return, and throws.

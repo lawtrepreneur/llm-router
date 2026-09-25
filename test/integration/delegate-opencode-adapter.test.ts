@@ -150,6 +150,7 @@ describe("delegate → opencode adapter (live mode)", () => {
     expect(result).toContain("[router");
     // CLI worker consumed no native session prompt.
     expect(rec.producerPrompts).toBe(0);
+    expect(rec.deleted).not.toContainEqual(expect.stringMatching(/^opencode:/));
   });
 
   it("falls back to native dispatch on non-adapter tiers when the CLI exits non-zero", async () => {
