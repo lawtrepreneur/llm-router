@@ -1,74 +1,63 @@
 # End-to-End Fixture Corpus Specification
 
 **Issue**: #10  
-**Status**: draft specification — does not bind public contract  
-**Depends-on**: #12 (dimension schema), #7 (Hermes adapter surface)  
-**Date**: 2026-09-25
+**Status**: composer-level corpus implemented — adapter/execution gates pending  
+**Depends-on**: #7 (Hermes adapter surface)  
+**Date**: 2026-09-25 · updated after #12 landed
 
 ## 1. Fixture schema
 
-### 1.1 Shared comparison fields (OpenCode + Hermes)
+### 1.1 Composer-level comparison fields
 
-These fields are the adapter-neutral comparison surface. They describe the routing outcome, not the shape of either adapter's classifier request or receipt.
+These are the fields asserted in `test/unit/e2e-routing-fixtures.test.ts` against
+`composeToDecision()` output. They are the composer-native surface, not adapter-specific.
 
-| Field name | Type | Description |
+| Field | Source in `RoutingDecision` | Type |
 |---|---|---|
-| `id` | `string` | Stable fixture identifier, such as `FX-001`. |
-| `phase` | `planning \| execution \| mixed` | Normalized phase outcome. |
-| `riskBand` | `low \| medium \| high` | Normalized risk band; `critical` is represented by `high` plus a critical fallback reason. |
-| `confidenceBand` | `low \| medium \| high` | Confidence bucket used for gate comparisons. |
-| `selectedTier` | `fast \| medium \| heavy \| STOP` | Normalized selected tier, or `STOP` when no candidate is admissible. |
-| `fallbackAction` | `escalate \| stop \| none` | Normalized fallback action. |
-| `fallbackReasonClass` | `string` | Stable reason class, not free-form adapter prose. |
+| `selectedTier` | `decision.choice?.tier ?? null` | `"fast" \| "medium" \| "heavy" \| null` |
+| `fallbackAction` | `decision.fallback?.action ?? "none"` | `"escalate" \| "none"` |
+| `fallbackReason` | `decision.fallback?.reason` | `string \| undefined` |
+| `neverFast` | assertion: `choice?.tier !== "fast"` | `boolean` (fixture metadata) |
 
-### 1.2 Adapter-specific envelope fields
+**Note**: `STOP`, `confidenceBand`, `riskBand`, `fallbackReasonClass` are NOT emitted by
+the composer. They are reserved for later adapter/evaluation normalization (see §5).
 
-The following fields are excluded from cross-adapter equality checks because they are transport, implementation, or telemetry details:
+### 1.2 Adapter-specific envelope fields (excluded from composer equality)
 
-- Raw prompt/context envelope and request identifiers — adapters may serialize context differently.
-- Candidate scores, probability vectors, logits, and raw classifier payloads — evidence representation belongs to each adapter.
-- OpenCode subprocess command, exit code, stderr, and process timing — not present in the Hermes envelope.
-- Hermes model/provider/request metadata and provider error codes — not present in the OpenCode subprocess envelope.
-- Receipt timestamps, trace IDs, token counts, and raw latency samples — compared only through promotion metrics.
-- Adapter-specific reason text and serialized fallback objects — compared through `fallbackReasonClass` and `fallbackAction`.
+- Raw prompt/context envelope and request identifiers
+- Candidate scores, probability vectors, logits, raw classifier payloads
+- OpenCode subprocess command, exit code, stderr, process timing
+- Hermes model/provider/request metadata and provider error codes
+- Receipt timestamps, trace IDs, token counts, raw latency samples
 
-### 1.3 Full fixture record shape (TypeScript-style pseudocode)
+### 1.3 Actual fixture record shape (implemented)
 
 ```ts
-type FixtureRecord = {
-  id: string;
+// test/fixtures/e2e-routing-fixtures.ts
+export interface E2ERoutingFixture {
+  id: `FX-${string}`;
   family: FixtureFamily;
-  request: { description: string; text: string };
-  candidates: Array<{
-    id: string;
-    tier: "fast" | "medium" | "heavy";
-    available: boolean;
-    permitted: boolean;
-  }>;
+  request: RoutingRequest;              // { prompt: string; context?: ... }
+  evidence: CompositeEvidence;          // src/contract/routing-composer.ts
+  registry: CandidateRegistry;         // src/contract/routing-composer.ts
   expected: {
-    phase: "planning" | "execution" | "mixed";
-    riskBand: "low" | "medium" | "high";
-    confidenceBand: "low" | "medium" | "high";
-    selectedTier: "fast" | "medium" | "heavy" | "STOP";
-    fallbackAction: "escalate" | "stop" | "none";
-    fallbackReasonClass: string;
+    selectedTier: "fast" | "medium" | "heavy" | null;
+    fallbackAction: "escalate" | "none";
+    fallbackReasonPattern?: RegExp;
+    neverFast?: boolean;
   };
-  evidence: {
-    // #12 dimension schema: complexity, risk, specialty, availability, permission, phase.
-    complexity: { level: string; probability?: number | "UNKNOWN" };
-    risk: { level: string };
-    specialty: { choice: string | null };
-    availability: Record<string, "available" | "unavailable" | "UNKNOWN">;
-    permission: Record<string, "allowed" | "denied" | "UNKNOWN">;
-    phase: "planning" | "execution" | "mixed";
-  };
-  injectedFailure?:
-    | "malformed-probability"
-    | "timeout"
-    | "classifier-failure"
-    | "verification-failure";
-};
+  riskLevel: "low" | "medium" | "high";
+  rationale: string;
+}
 ```
+
+`CompositeEvidence` requires:
+- `schemaVersion: SCHEMA_VERSION`
+- `complexity`, `risk`: `ScalarComposite` — `{ value, confidence, probabilities: readonly number[], reason, version }`
+- `specialty`: `SpecialtyComposite` — `{ value, tier?, confidence, probabilities, reason, version }`
+- `availability`, `permission`: `GateComposite` — `{ gates: Record<string, boolean>, confidence, probabilities, reason, version }`
+- `calibration` (required): `{ classifierVersion, calibrationVersion, temperature (>0), candidateProbabilities (sum=1), calibratedConfidence }`
+- `phase` (optional): `PhaseComposite` — `{ value, confidence, probabilities, reason, version }`
 
 ## 2. Fixture records
 
