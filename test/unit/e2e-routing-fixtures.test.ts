@@ -41,6 +41,8 @@ function buildReport(
     failures,
     highRiskDowngrades: 0,
     overRouting: 0,
+    shadowObservations: 0,
+    shadowDisagreements: 0,
     latencyMs: { count: fixtures.length, min: 0, max: 0, average: 0 },
     replay: { records: fixtures.length, mismatches: [], deterministic: true, policyVersions: [], registryVersions: [] },
   };

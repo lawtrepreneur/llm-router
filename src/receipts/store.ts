@@ -1,7 +1,7 @@
 /** Secret-free, append-only routing receipts and deterministic evaluation. */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { stableHash } from "../contract/routing-receipt";
+import { stableHash, type ShadowObservation } from "../contract/routing-receipt";
 import { composeToDecision, type CompositeEvidence, type CandidateRegistry } from "../contract/routing-composer";
 
 export const RECEIPT_STORE_VERSION = 1;
@@ -33,6 +33,8 @@ export type RoutingRecord = {
   evidence?: Record<string, { value?: string; confidence: number; probabilities?: number[] }>;
   /** Issue #13: tier candidates available at decision time (for re-decision). */
   candidates?: string[];
+  /** Phase 4: decider shadow classifier observation, secret-free. */
+  shadowClassifier?: ShadowObservation;
 };
 
 export type ReceiptStore = {
@@ -54,6 +56,7 @@ const NESTED_FIELDS = {
   escalation: ["occurred", "count", "reason"],
   verification: ["status", "method"],
   downgrade: ["from", "to", "reason"],
+  shadowClassifier: ["probabilities", "disagreement", "unavailable", "error", "latencyMs"],
 } as const;
 
 /** Documented durable fields, in write order. Everything else is dropped before persist. */
@@ -62,6 +65,7 @@ const RECORD_FIELDS = [
   "escalation", "verification", "latencyMs", "outcome", "policyVersion",
   "registryVersion", "classifierVersion", "schemaHash", "candidateRegistryHash",
   "receiptHash", "adapterMode", "downgrade", "evidence", "candidates",
+  "shadowClassifier",
 ] as const;
 
 /**
@@ -90,6 +94,19 @@ export function validateRoutingRecord(value: unknown): string[] {
   if (!["off", "shadow", "live"].includes(String(r.adapterMode))) errors.push("invalid record adapterMode");
   if (!["accepted", "failed", "unmet"].includes(String(r.outcome))) errors.push("invalid record outcome");
   if (r.downgrade !== undefined && (!own(r.downgrade) || typeof r.downgrade.reason !== "string")) errors.push("invalid record downgrade");
+  // Phase 4: decider shadow observation is optional but shape-checked.
+  if (r.shadowClassifier !== undefined) {
+    const s = r.shadowClassifier;
+    const finite01 = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+    if (!own(s) || typeof s.disagreement !== "boolean" || !Number.isFinite(s.latencyMs) || s.latencyMs < 0)
+      errors.push("invalid record shadowClassifier");
+    if (own(s)) {
+      if (s.unavailable !== undefined && typeof s.unavailable !== "boolean") errors.push("invalid record shadowClassifier.unavailable");
+      if (s.error !== undefined && typeof s.error !== "string") errors.push("invalid record shadowClassifier.error");
+      if (s.probabilities !== undefined && (!Array.isArray(s.probabilities) || s.probabilities.length !== 3 || s.probabilities.some(p => !finite01(p))))
+        errors.push("invalid record shadowClassifier.probabilities");
+    }
+  }
   // Issue #13: re-decision inputs are secret-free and shape-checked.
   if (r.evidence !== undefined) {
     if (!own(r.evidence)) errors.push("invalid record evidence");
@@ -118,7 +135,7 @@ function allowlistRecord(record: RoutingRecord): RoutingRecord {
   // Defense in depth: nested objects are strictly allowlisted too — unknown
   // nested fields are dropped, then secret-bearing keys are removed if any
   // nested field name ever collides with a secret name.
-  for (const nested of ["escalation", "verification", "downgrade"] as const) {
+  for (const nested of ["escalation", "verification", "downgrade", "shadowClassifier"] as const) {
     const value = out[nested];
     if (!own(value)) continue;
     const cleanNested = {} as Record<string, unknown>;
@@ -240,7 +257,7 @@ export function replayReceipts(records: RoutingRecord[]): ReplayResult {
   return { deterministic: mismatches.length === 0, records: records.length, mismatches, policyVersions: [...new Set(records.map(r => r.policyVersion))], registryVersions: [...new Set(records.map(r => r.registryVersion))] };
 }
 
-export type RoutingReport = { records: number; failures: number; highRiskDowngrades: number; overRouting: number; latencyMs: { count: number; min: number; max: number; average: number }; replay: ReplayResult };
+export type RoutingReport = { records: number; failures: number; highRiskDowngrades: number; overRouting: number; shadowObservations: number; shadowDisagreements: number; latencyMs: { count: number; min: number; max: number; average: number }; replay: ReplayResult };
 export function reportReceipts(records: RoutingRecord[]): RoutingReport {
   const latencies = records.map(r => r.latencyMs);
   return {
@@ -248,6 +265,8 @@ export function reportReceipts(records: RoutingRecord[]): RoutingReport {
     failures: records.filter(r => r.outcome !== "accepted" || r.verification.status === "failed" || r.intendedTarget !== r.actualTarget).length,
     highRiskDowngrades: records.filter(r => r.downgrade?.reason.toLowerCase().includes("risk")).length,
     overRouting: records.filter(r => r.intendedTarget !== r.actualTarget && !r.escalation.occurred).length,
+    shadowObservations: records.filter(r => r.shadowClassifier !== undefined).length,
+    shadowDisagreements: records.filter(r => r.shadowClassifier?.disagreement === true).length,
     latencyMs: { count: latencies.length, min: latencies.length ? Math.min(...latencies) : 0, max: latencies.length ? Math.max(...latencies) : 0, average: latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : 0 },
     replay: replayReceipts(records),
   };

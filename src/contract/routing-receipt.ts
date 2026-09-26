@@ -18,6 +18,19 @@ export type RoutingDimensionEvidence = {
   probabilities: readonly number[];
 };
 
+export type ShadowObservation = {
+  /** Classifier probability order: [fast, medium, heavy]. */
+  probabilities?: readonly number[];
+  /** True only when classifier argmax differs from deterministic result. */
+  disagreement: boolean;
+  /** True when classifier was consulted but produced no usable result. */
+  unavailable?: boolean;
+  /** Scrubbed, non-secret failure detail. */
+  error?: string;
+  /** Wall-clock classifier call duration. */
+  latencyMs: number;
+};
+
 export type RoutingReceipt = RoutingReceiptMetadata & {
   schemaVersion: number;
   schemaHash: string;

@@ -120,6 +120,8 @@ export interface ModeConfig {
 
 export interface EnforcementConfig {
   mode?: "off" | "advisory" | "enforced";
+  /** Phase 4: attach decider shadow observations to routing receipts. Default false. */
+  deciderShadow?: boolean;
   envGate?: string;
   perTier?: Record<string, "off" | "advisory" | "enforced">;
   guard?: { readDraftCap?: number; sameOpRetryCap?: number; blockSelfScript?: boolean; deliverableFirst?: boolean; budget?: number; blockScriptWrites?: boolean };

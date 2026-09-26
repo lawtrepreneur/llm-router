@@ -103,6 +103,7 @@ import { newLadderState, recordAttempt, nextAction, advance, buildEscalatePolicy
 import { runOpenCode } from "./adapter/opencode";
 import { shouldIntercept } from "./adapter/wiring";
 import { canExecuteRoute, decideRoute } from "./router/boundary";
+import { callDecider } from "./classifier/decider";
 import { loadEvalGate } from "./receipts/store";
 
 // ---------------------------------------------------------------------------
@@ -578,6 +579,44 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               const taskText = forcingNote
                 ? `${scrubText(forcingNote)}\n\n${args.task}`
                 : args.task;
+              // Phase 4: decider shadow observation runs concurrently with
+              // the native route; its result attaches to the receipt only.
+              // Opt-in via enforcement.deciderShadow (default false) so tests
+              // and existing installs stay deterministic. Best-effort: any
+              // failure becomes an `unavailable` observation.
+              const tierList = Object.keys(tiersForCost);
+              const deciderQuestion = {
+                question: "Which model tier should handle this task?",
+                options: ["fast", "medium", "heavy"],
+              };
+              const deciderStart = Date.now();
+              const shadowClassifier = activeCfg.enforcement?.deciderShadow !== true
+                ? undefined
+                : (async (): Promise<
+                    { probabilities?: number[]; disagreement: boolean; unavailable?: boolean; error?: string; latencyMs: number }
+                  > => {
+                    try {
+                      const answers = await callDecider(taskText, [deciderQuestion]);
+                      const answer = answers[0];
+                      const probabilities = [
+                        answer.probabilities[deciderQuestion.options.indexOf("fast")] ?? 0,
+                        answer.probabilities[deciderQuestion.options.indexOf("medium")] ?? 0,
+                        answer.probabilities[deciderQuestion.options.indexOf("heavy")] ?? 0,
+                      ];
+                      return {
+                        probabilities,
+                        disagreement: answer.choice !== tier,
+                        latencyMs: Date.now() - deciderStart,
+                      };
+                    } catch (error) {
+                      return {
+                        unavailable: true,
+                        error: scrubText(String(error)).slice(0, 200),
+                        disagreement: false,
+                        latencyMs: Date.now() - deciderStart,
+                      };
+                    }
+                  })();
               const routeCandidates = Object.keys(tiersForCost).map(routeTier => ({ tier: routeTier }));
               const route = decideRoute(
                 { prompt: taskText, context: { requestedTier: tier } },
@@ -811,6 +850,8 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                 // replay when the composer path produced it (secret-free).
                 ...(route.receipt.dimensions ? { evidence: route.receipt.dimensions } : {}),
                 ...((route.candidates?.length ?? 0) > 0 ? { candidates: route.candidates.map(c => c.tier) } : {}),
+                // Phase 4: decider shadow observation (fail-safe, never gates).
+                ...(shadowClassifier ? { shadowClassifier: await shadowClassifier } : {}),
               });
               // Per-attempt cleanup (drop producer session tracking + state).
               if (producerSid !== baselineID) changedFileStore.clear(producerSid);
