@@ -20,6 +20,7 @@ export function effectiveAdapterMode(cfg: RouterConfigLike): "off" | "shadow" | 
 
 export interface RouterConfigLike {
   opencodeAdapter?: OpenCodeAdapterConfig;
+  hermesAdapter?: { mode: "off" | "shadow" | "live"; tiers: string[]; allowedAgents: string[] };
 }
 
 /**
@@ -41,6 +42,26 @@ export function shouldIntercept(
   if (mode === "off") return "off";
   if (options.isGrader) return "off";
   const adapter = cfg.opencodeAdapter!;
+  if (!adapter.tiers.includes(tier)) return "off";
+  if (!agent || !adapter.allowedAgents.includes(agent)) return "off";
+  return mode;
+}
+
+/**
+ * Hermes transport eligibility. Same four conditions as shouldIntercept but
+ * against hermesAdapter; the recursion guard uses HERMES_CHILD_ENV.
+ */
+export function shouldHermes(
+  cfg: RouterConfigLike,
+  tier: string,
+  agent: string | undefined,
+  options: { isGrader?: boolean } = {},
+): "off" | "shadow" | "live" {
+  if (isOcChild()) return "off";
+  const mode = cfg.hermesAdapter?.mode;
+  if (mode !== "shadow" && mode !== "live") return "off";
+  if (options.isGrader) return "off";
+  const adapter = cfg.hermesAdapter!;
   if (!adapter.tiers.includes(tier)) return "off";
   if (!agent || !adapter.allowedAgents.includes(agent)) return "off";
   return mode;

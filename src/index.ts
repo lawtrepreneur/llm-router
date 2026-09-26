@@ -101,7 +101,8 @@ import {
 } from "./verify/dispatch";
 import { newLadderState, recordAttempt, nextAction, advance, buildEscalatePolicy, formatLadderScorecard } from "./escalate/ladder";
 import { runOpenCode } from "./adapter/opencode";
-import { shouldIntercept } from "./adapter/wiring";
+import { runHermes } from "./adapter/hermes";
+import { shouldIntercept, shouldHermes } from "./adapter/wiring";
 import { canExecuteRoute, decideRoute } from "./router/boundary";
 import { callDecider } from "./classifier/decider";
 import { loadEvalGate } from "./receipts/store";
@@ -653,6 +654,14 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                 { isGrader: !!toolCtx?.sessionID && graderSessions.has(toolCtx.sessionID) },
               );
               const adapterLive = adapterMode === "live";
+              const hermesMode = shouldHermes(
+                activeCfg,
+                routedTier,
+                toolCtx?.sessionID ? ocSessionAgents.get(toolCtx.sessionID!) : undefined,
+                { isGrader: !!toolCtx?.sessionID && graderSessions.has(toolCtx.sessionID) },
+              );
+              const hermesLive = hermesMode === "live" && !adapterLive;
+              const hermesShadow = hermesMode === "shadow" && !adapterLive;
               const selectedAgent = activeCfg.opencodeAdapter?.tierAgents[routedTier];
               if (adapterLive) {
                 logLiveAdapter(
@@ -669,7 +678,7 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                 // CLI workers do not have a server-side session. This stable
                 // synthetic ID lets the existing baseline/gate path own their
                 // artefact without pretending it is a native child session.
-                producerSid = `opencode:${randomUUID()}`;
+                producerSid = hermesLive ? `hermes:${randomUUID()}` : `opencode:${randomUUID()}`;
               } else {
                 const created: any = await ctx.client.session.create({
                   body: {
@@ -713,10 +722,16 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               // is never an empty artefact that a lenient DoD could pass.
               let producerError: string | null = null;
               try {
-                if (adapterLive) {
-                  logLiveAdapter(
-                    `opencode adapter spawn start tier=${tier} agent=${selectedAgent ?? "unknown"}`,
+                if (hermesLive) {
+                  logLiveAdapter(`hermes adapter spawn start tier=${tier}`);
+                  const result = await runHermes(
+                    activeCfg.hermesAdapter!,
+                    taskText,
+                    args.cwd ? resolve(ctx.directory, args.cwd) : ctx.directory,
                   );
+                  logLiveAdapter(`hermes adapter success tier=${tier} duration=${Date.now() - startedAt}ms`);
+                  producerText = result.payload;
+                } else if (adapterLive) {
                   const result = await runOpenCode(
                     activeCfg.opencodeAdapter!,
                     taskText,
