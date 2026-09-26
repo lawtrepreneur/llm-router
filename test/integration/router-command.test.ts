@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { chdir } from "node:process";
 import ModelRouterPlugin from "../../src/index";
 import { resolveEnforcementMode } from "../../src/router/enforcement";
 import { loadConfig, invalidateConfigCache } from "../../src/router/config";
@@ -12,12 +13,15 @@ describe("router-command integration", () => {
   let hooks: any;
   let savedHome: string | undefined;
   let savedUserProfile: string | undefined;
+  let savedCwd: string;
   let testHomeDir: string;
 
   beforeEach(async () => {
+    savedCwd = process.cwd();
     // Redirect HOME/USERPROFILE so the real state file is never touched.
     testHomeDir = join(tmpdir(), `oc-mr-router-cmd-${Date.now()}`);
     mkdirSync(testHomeDir, { recursive: true });
+    chdir(testHomeDir);
     savedHome = process.env.HOME;
     savedUserProfile = process.env.USERPROFILE;
     process.env.HOME = testHomeDir;
@@ -37,6 +41,7 @@ describe("router-command integration", () => {
     } else {
       process.env.USERPROFILE = savedUserProfile;
     }
+    chdir(savedCwd);
     invalidateConfigCache();
   });
 
@@ -123,6 +128,7 @@ describe("router-command — model catalog", () => {
   let hooks: any;
   let savedHome: string | undefined;
   let savedUserProfile: string | undefined;
+  let savedCwd: string;
   let testHomeDir: string;
 
   // Mock opencode client exposing config.providers(). Only anthropic is
@@ -156,8 +162,10 @@ describe("router-command — model catalog", () => {
   };
 
   beforeEach(async () => {
+    savedCwd = process.cwd();
     testHomeDir = join(tmpdir(), `oc-mr-catalog-${Date.now()}`);
     mkdirSync(testHomeDir, { recursive: true });
+    chdir(testHomeDir);
     savedHome = process.env.HOME;
     savedUserProfile = process.env.USERPROFILE;
     process.env.HOME = testHomeDir;
@@ -171,6 +179,7 @@ describe("router-command — model catalog", () => {
     else process.env.HOME = savedHome;
     if (savedUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = savedUserProfile;
+    chdir(savedCwd);
     invalidateConfigCache();
   });
 
@@ -358,6 +367,7 @@ describe("router-command — model catalog", () => {
 describe("router-command — passive warnings go to opencode's log", () => {
   let savedHome: string | undefined;
   let savedUserProfile: string | undefined;
+  let savedCwd: string;
   let testHomeDir: string;
 
   const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -390,8 +400,10 @@ describe("router-command — passive warnings go to opencode's log", () => {
   });
 
   beforeEach(() => {
+    savedCwd = process.cwd();
     testHomeDir = join(tmpdir(), `oc-mr-log-${Date.now()}`);
     mkdirSync(testHomeDir, { recursive: true });
+    chdir(testHomeDir);
     savedHome = process.env.HOME;
     savedUserProfile = process.env.USERPROFILE;
     process.env.HOME = testHomeDir;
@@ -404,6 +416,7 @@ describe("router-command — passive warnings go to opencode's log", () => {
     else process.env.HOME = savedHome;
     if (savedUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = savedUserProfile;
+    chdir(savedCwd);
     invalidateConfigCache();
   });
 

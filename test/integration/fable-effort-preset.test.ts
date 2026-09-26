@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, test } from "vitest";
+import { chdir } from "node:process";
 import { buildAgentOptions } from "../../src/router/agent-options";
 import { validateConfig } from "../../src/router/config";
 
@@ -32,12 +33,14 @@ test("applies fable-effort preset options through config hook", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "model-router-fable-effort-"));
   const prevHome = process.env.HOME;
   const prevUserProfile = process.env.USERPROFILE;
+  const prevCwd = process.cwd();
   const prevEnforce = process.env.MODEL_ROUTER_ENFORCE;
   const prevVerifiedDelegate = process.env.MODEL_ROUTER_VERIFIED_DELEGATE;
 
   try {
     process.env.HOME = dir;
     process.env.USERPROFILE = dir;
+    chdir(dir);
     delete process.env.MODEL_ROUTER_ENFORCE;
     process.env.MODEL_ROUTER_VERIFIED_DELEGATE = "1";
 
@@ -61,6 +64,7 @@ test("applies fable-effort preset options through config hook", async () => {
     else process.env.HOME = prevHome;
     if (prevUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = prevUserProfile;
+    chdir(prevCwd);
     if (prevEnforce === undefined) delete process.env.MODEL_ROUTER_ENFORCE;
     else process.env.MODEL_ROUTER_ENFORCE = prevEnforce;
     if (prevVerifiedDelegate === undefined) delete process.env.MODEL_ROUTER_VERIFIED_DELEGATE;
@@ -79,12 +83,14 @@ test("registers an effort key only for the tiers that set one", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "model-router-no-effort-"));
   const prevHome = process.env.HOME;
   const prevUserProfile = process.env.USERPROFILE;
+  const prevCwd = process.cwd();
   const prevEnforce = process.env.MODEL_ROUTER_ENFORCE;
   const prevVerifiedDelegate = process.env.MODEL_ROUTER_VERIFIED_DELEGATE;
 
   try {
     process.env.HOME = dir;
     process.env.USERPROFILE = dir;
+    chdir(dir);
     delete process.env.MODEL_ROUTER_ENFORCE;
     process.env.MODEL_ROUTER_VERIFIED_DELEGATE = "1";
 
@@ -116,6 +122,7 @@ test("registers an effort key only for the tiers that set one", async () => {
     else process.env.HOME = prevHome;
     if (prevUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = prevUserProfile;
+    chdir(prevCwd);
     if (prevEnforce === undefined) delete process.env.MODEL_ROUTER_ENFORCE;
     else process.env.MODEL_ROUTER_ENFORCE = prevEnforce;
     if (prevVerifiedDelegate === undefined) delete process.env.MODEL_ROUTER_VERIFIED_DELEGATE;

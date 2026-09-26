@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { chdir } from "node:process";
 import { readFileSync } from "node:fs";
 import {
   deepMerge,
@@ -134,11 +135,13 @@ describe("loadConfig — user overrides file", () => {
   let tmpHome: string;
   let savedHome: string | undefined;
   let savedUserProfile: string | undefined;
+  let savedCwd: string;
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     savedHome = process.env.HOME;
     savedUserProfile = process.env.USERPROFILE;
+    savedCwd = process.cwd();
     tmpHome = join(
       tmpdir(),
       `oc-mr-overrides-${process.pid}-${Date.now()}-${Math.random()
@@ -148,12 +151,16 @@ describe("loadConfig — user overrides file", () => {
     mkdirSync(tmpHome, { recursive: true });
     process.env.HOME = tmpHome;
     process.env.USERPROFILE = tmpHome;
+    // chdir to tmpHome so findProjectOverride() never walks up to the repo
+    // root and picks up .opencode/opencode-model-router.overrides.jsonc.
+    chdir(tmpHome);
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     invalidateConfigCache();
   });
 
   afterEach(() => {
     warnSpy.mockRestore();
+    chdir(savedCwd);
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     if (savedUserProfile === undefined) delete process.env.USERPROFILE;
