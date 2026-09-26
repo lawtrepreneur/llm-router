@@ -803,6 +803,10 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   intended: tier, actual: tier, escalation: { occurred: state.totalAttempts > 0, count: state.totalAttempts },
                 }),
                 adapterMode: adapterLive ? "live" : "shadow",
+                // Issue #13: persist evidence for deterministic re-decision
+                // replay when the composer path produced it (secret-free).
+                ...(route.receipt.dimensions ? { evidence: route.receipt.dimensions } : {}),
+                ...((route.candidates?.length ?? 0) > 0 ? { candidates: route.candidates.map(c => c.tier) } : {}),
               });
               // Per-attempt cleanup (drop producer session tracking + state).
               if (producerSid !== baselineID) changedFileStore.clear(producerSid);

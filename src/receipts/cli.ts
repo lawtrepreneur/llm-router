@@ -7,6 +7,7 @@ const store = createReceiptStore(join(dir, "routing-receipts.jsonl"));
 const command = process.argv[2] ?? "report";
 const records = store.read();
 if (command === "replay") console.log(JSON.stringify(store.replay(records), null, 2));
+else if (command === "redecide") console.log(JSON.stringify(store.reDecide(records), null, 2));
 else if (command === "report") console.log(JSON.stringify(store.report(records), null, 2));
 else if (command === "eval") console.log(JSON.stringify(saveEvalGate(join(dir, "eval-gate.json"), store.report(records)), null, 2));
 else throw new Error(`unknown receipts command: ${command}`);

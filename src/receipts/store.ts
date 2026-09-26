@@ -2,6 +2,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stableHash } from "../contract/routing-receipt";
+import { composeToDecision, type CompositeEvidence, type CandidateRegistry } from "../contract/routing-composer";
 
 export const RECEIPT_STORE_VERSION = 1;
 export type AdapterMode = "off" | "shadow" | "live";
@@ -28,12 +29,17 @@ export type RoutingRecord = {
   receiptHash?: string;
   adapterMode: AdapterMode;
   downgrade?: { from: string; to: string; reason: string };
+  /** Issue #13: secret-free per-dimension evidence the original decision used. */
+  evidence?: Record<string, { value?: string; confidence: number; probabilities?: number[] }>;
+  /** Issue #13: tier candidates available at decision time (for re-decision). */
+  candidates?: string[];
 };
 
 export type ReceiptStore = {
   append(record: RoutingRecord): void;
   read(): RoutingRecord[];
   replay(records?: RoutingRecord[]): ReplayResult;
+  reDecide(records?: RoutingRecord[]): ReDecisionResult;
   report(records?: RoutingRecord[]): RoutingReport;
   saveEvalGate(report: RoutingReport): EvalGate;
   loadEvalGate(): EvalGate | null;
@@ -53,7 +59,7 @@ const RECORD_FIELDS = [
   "kind", "version", "id", "timestamp", "intendedTarget", "actualTarget",
   "escalation", "verification", "latencyMs", "outcome", "policyVersion",
   "registryVersion", "classifierVersion", "schemaHash", "candidateRegistryHash",
-  "receiptHash", "adapterMode", "downgrade",
+  "receiptHash", "adapterMode", "downgrade", "evidence", "candidates",
 ] as const;
 
 /**
@@ -82,6 +88,18 @@ export function validateRoutingRecord(value: unknown): string[] {
   if (!["off", "shadow", "live"].includes(String(r.adapterMode))) errors.push("invalid record adapterMode");
   if (!["accepted", "failed", "unmet"].includes(String(r.outcome))) errors.push("invalid record outcome");
   if (r.downgrade !== undefined && (!own(r.downgrade) || typeof r.downgrade.reason !== "string")) errors.push("invalid record downgrade");
+  // Issue #13: re-decision inputs are secret-free and shape-checked.
+  if (r.evidence !== undefined) {
+    if (!own(r.evidence)) errors.push("invalid record evidence");
+    else {
+      for (const [dim, rec] of Object.entries(r.evidence)) {
+        if (!own(rec) || typeof rec.confidence !== "number" || !Number.isFinite(rec.confidence)) errors.push(`invalid record evidence[${dim}]`);
+        if (rec?.value !== undefined && typeof rec.value !== "string") errors.push(`invalid record evidence[${dim}].value`);
+        if (rec?.probabilities !== undefined && (!Array.isArray(rec.probabilities) || rec.probabilities.some(p => typeof p !== "number" || !Number.isFinite(p)))) errors.push(`invalid record evidence[${dim}].probabilities`);
+      }
+    }
+  }
+  if (r.candidates !== undefined && (!Array.isArray(r.candidates) || r.candidates.some(c => typeof c !== "string"))) errors.push("invalid record candidates");
   for (const secret of SECRET_FIELDS) if (secret in r) errors.push(`secret-carrying field rejected: ${secret}`);
   return errors;
 }
@@ -107,6 +125,17 @@ function allowlistRecord(record: RoutingRecord): RoutingRecord {
     }
     for (const secret of SECRET_FIELDS) delete cleanNested[secret];
     (out as Record<string, unknown>)[nested] = cleanNested;
+  }
+  // Issue #13: evidence entries are allowlisted per-dimension (secret-free).
+  if (own(out.evidence)) {
+    const cleanEvidence: Record<string, unknown> = {};
+    for (const [dim, rec] of Object.entries(out.evidence)) {
+      if (!own(rec)) continue;
+      cleanEvidence[dim] = Object.fromEntries(
+        ["value", "confidence", "probabilities"].filter(k => k in rec).map(k => [k, (rec as Record<string, unknown>)[k]]),
+      );
+    }
+    (out as Record<string, unknown>).evidence = cleanEvidence;
   }
   return out;
 }
@@ -157,6 +186,9 @@ export function createReceiptStore(path: string): ReceiptStore {
     },
     read,
     replay(records = read()) { return replayReceipts(records); },
+    reDecide(records = read()) {
+      return reDecideReceipts(records, composerReDecider(composeToDecision));
+    },
     report(records = read()) { return reportReceipts(records); },
     saveEvalGate(report) { return saveEvalGate(join(path, "..", "eval-gate.json"), report); },
     loadEvalGate() { return loadEvalGate(join(path, "..", "eval-gate.json")); },
@@ -189,6 +221,61 @@ export function reportReceipts(records: RoutingRecord[]): RoutingReport {
 }
 
 export type EvalGate = { passed: boolean; checkedAt: string; reportHash: string; reason: string };
+// ---------------------------------------------------------------------------
+// Issue #13: pure deterministic policy re-decision replay.
+// ---------------------------------------------------------------------------
+export type ReDecisionDiff = {
+  id: string;
+  requestHash: string;
+  originalIntendedTarget: string;
+  /** null when the record carries no re-decidable evidence (never fabricated). */
+  reDecidedTarget: string | null;
+  mismatch: boolean;
+};
+export type ReDecisionResult = { records: number; mismatches: number; diffs: ReDecisionDiff[] };
+export type EvidenceReDecider = (
+  evidence: NonNullable<RoutingRecord["evidence"]>,
+  candidates: NonNullable<RoutingRecord["candidates"]>,
+) => string | null;
+type ComposeLike = (evidence: CompositeEvidence, registry: CandidateRegistry) => { receipt?: { selectedTier?: string } | undefined };
+
+/**
+ * Re-decide every record through the given pure policy function and diff the
+ * result against the original intended target. No classifier, network, SDK,
+ * or filesystem access here — `reDecide` is caller-supplied and pure.
+ * Records without stored evidence get `reDecidedTarget: null` and no mismatch.
+ */
+export function reDecideReceipts(records: RoutingRecord[], reDecide: EvidenceReDecider): ReDecisionResult {
+  const diffs: ReDecisionDiff[] = [];
+  for (const r of records) {
+    const requestHash = stableHash({ id: r.id, evidence: r.evidence, candidates: r.candidates });
+    const reDecidedTarget = r.evidence && r.candidates ? reDecide(r.evidence, r.candidates) : null;
+    diffs.push({
+      id: r.id,
+      requestHash,
+      originalIntendedTarget: r.intendedTarget,
+      reDecidedTarget,
+      mismatch: reDecidedTarget !== null && reDecidedTarget !== r.intendedTarget,
+    });
+  }
+  return { records: records.length, mismatches: diffs.filter(d => d.mismatch).length, diffs };
+}
+
+/** Default pure re-decider: run the existing composer over stored evidence. */
+export function composerReDecider(
+  compose: ComposeLike,
+): EvidenceReDecider {
+  return (evidence, candidates) => {
+    // ponytail: registry rebuilt from tier-name candidates; ids === tier names.
+    const registry = {
+      schemaVersion: 1,
+      tiers: ["fast", "medium", "heavy"] as const,
+      candidates: Object.fromEntries(candidates.map(tier => [tier, { id: tier, tier: tier as "fast" | "medium" | "heavy" }])),
+    } as CandidateRegistry;
+    const decision = compose({ ...evidence, schemaVersion: 1 }, registry);
+    return decision?.receipt?.selectedTier ?? "escalated";
+  };
+}
 export function saveEvalGate(path: string, report: RoutingReport): EvalGate {
   const gate: EvalGate = { passed: report.failures === 0 && report.replay.deterministic, checkedAt: new Date().toISOString(), reportHash: stableHash(report), reason: report.failures === 0 && report.replay.deterministic ? "evaluation passed" : "evaluation failures or replay mismatch" };
   mkdirSync(dirname(path), { recursive: true });
