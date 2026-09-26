@@ -31,6 +31,10 @@ export type RouteBoundaryOptions = {
   taskId?: string;
   mode?: "live" | "shadow";
   producer?: Record<string, unknown>;
+  /** Issue #11: optional versioned evidence metadata stamped into native receipts. */
+  classifierVersion?: string;
+  schemaHash?: string;
+  candidateRegistryHash?: string;
   onDecision?: (decision: RoutingDecision) => void;
   shadow?: {
     choose: RouteChooser;
@@ -112,6 +116,9 @@ export function decideRoute(
       fallback: accepted ? undefined : { action: "escalate", reason },
       mode: options.mode ?? "live",
       producer: options.producer,
+      classifierVersion: options.classifierVersion,
+      schemaHash: options.schemaHash,
+      candidateRegistryHash: options.candidateRegistryHash,
     },
   };
 
@@ -132,6 +139,9 @@ export function decideRoute(
         taskId: options.taskId,
         mode: "shadow",
         producer: options.producer,
+        classifierVersion: options.classifierVersion,
+        schemaHash: options.schemaHash,
+        candidateRegistryHash: options.candidateRegistryHash,
       });
       try {
         options.shadow.onDecision?.(shadowDecision);

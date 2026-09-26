@@ -19,6 +19,12 @@ export type RoutingRecord = {
   outcome: "accepted" | "failed" | "unmet";
   policyVersion: string;
   registryVersion: string;
+  /** Issue #11: classifier version when the decision carried calibrated evidence. */
+  classifierVersion?: string;
+  /** Issue #11: stable hash of the typed question/candidate schema. */
+  schemaHash?: string;
+  /** Issue #11: stable hash of the candidate registry used for the decision. */
+  candidateRegistryHash?: string;
   receiptHash?: string;
   adapterMode: AdapterMode;
   downgrade?: { from: string; to: string; reason: string };
@@ -87,7 +93,7 @@ export function replayReceipts(records: RoutingRecord[]): ReplayResult {
   for (const [i, r] of records.entries()) {
     // The fixed versions and the recorded target are the complete replay input.
     // No classifier, network, prompt, auth, environment, or tool output is consulted.
-    const expected = stableHash({ policy: r.policyVersion, registry: r.registryVersion, intended: r.intendedTarget, actual: r.actualTarget, escalation: r.escalation });
+    const expected = stableHash({ policy: r.policyVersion, registry: r.registryVersion, classifierVersion: r.classifierVersion, schemaHash: r.schemaHash, candidateRegistryHash: r.candidateRegistryHash, intended: r.intendedTarget, actual: r.actualTarget, escalation: r.escalation });
     if (r.receiptHash && r.receiptHash !== expected) mismatches.push(`record ${i + 1}: replay hash mismatch`);
   }
   return { deterministic: mismatches.length === 0, records: records.length, mismatches, policyVersions: [...new Set(records.map(r => r.policyVersion))], registryVersions: [...new Set(records.map(r => r.registryVersion))] };

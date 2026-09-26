@@ -52,6 +52,8 @@ import {
 } from "./router/protocol";
 import { resolveEnforcementMode } from "./router/enforcement";
 import { createPluginLogger } from "./router/logger";
+import { stableHash, RECEIPT_SCHEMA_VERSION } from "./contract/routing-receipt";
+import { EVIDENCE_DIMENSIONS } from "./contract/routing-composer";
 import {
   findOrphanedStrongPatterns,
   normalizeCatalog,
@@ -585,6 +587,9 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                   };
                 },
                 {
+                  classifierVersion: "native",
+                  candidateRegistryHash: stableHash(routeCandidates),
+                  schemaHash: stableHash({ schemaVersion: RECEIPT_SCHEMA_VERSION, dimensions: [...EVIDENCE_DIMENSIONS].sort() }),
                   onDecision: decision =>
                     logger.warn(`[routing-decision] ${JSON.stringify(decision.receipt)}`),
                 },
@@ -780,11 +785,24 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
               }
 
               const receiptDir = process.env.MODEL_ROUTER_RECEIPTS_DIR ?? join(homedir(), ".config", "opencode-model-router");
+              const registryHash = route.receipt.candidateRegistryHash ?? stableHash(routeCandidates);
+              const recordClassifierVersion = route.receipt.classifierVersion ?? "native";
+              // Canonical schema hash per routing-receipt contract: schemaVersion + dimension keys.
+              const recordSchemaHash = route.receipt.schemaHash ?? stableHash({ schemaVersion: RECEIPT_SCHEMA_VERSION, dimensions: [...EVIDENCE_DIMENSIONS].sort() });
               createReceiptStore(join(receiptDir, "routing-receipts.jsonl")).append({
                 kind: "routing", version: 1, id: `route-${Date.now()}-${tier}`, timestamp: new Date().toISOString(),
                 intendedTarget: tier, actualTarget: tier, escalation: { occurred: state.totalAttempts > 0, count: state.totalAttempts },
                 verification: { status: gateRes.accepted ? "passed" : "failed", method: "router-gate" }, latencyMs: Date.now() - startedAt,
-                outcome: gateRes.accepted ? "accepted" : "failed", policyVersion: String(activeCfg.activePreset), registryVersion: "native", adapterMode: adapterLive ? "live" : "shadow",
+                outcome: gateRes.accepted ? "accepted" : "failed", policyVersion: String(activeCfg.activePreset),
+                registryVersion: registryHash,
+                classifierVersion: recordClassifierVersion,
+                schemaHash: recordSchemaHash,
+                candidateRegistryHash: registryHash,
+                receiptHash: stableHash({
+                  policy: String(activeCfg.activePreset), registry: registryHash, classifierVersion: recordClassifierVersion, schemaHash: recordSchemaHash, candidateRegistryHash: registryHash,
+                  intended: tier, actual: tier, escalation: { occurred: state.totalAttempts > 0, count: state.totalAttempts },
+                }),
+                adapterMode: adapterLive ? "live" : "shadow",
               });
               // Per-attempt cleanup (drop producer session tracking + state).
               if (producerSid !== baselineID) changedFileStore.clear(producerSid);
