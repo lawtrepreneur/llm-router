@@ -45,21 +45,23 @@ async function bootPlugin(dir: string) {
   return hooks;
 }
 
-function deciderResponse() {
+function deciderResponse(fast = false) {
+  const probabilities = fast ? [0.7, 0.2, 0.1] : [0.2, 0.7, 0.1];
   return {
     ok: true,
     status: 200,
     json: async () => ({ choices: [{ logprobs: { content: [{ top_logprobs: [
-      { token: "A", logprob: Math.log(0.2) },
-      { token: "B", logprob: Math.log(0.7) },
-      { token: "C", logprob: Math.log(0.1) },
+      { token: "A", logprob: Math.log(probabilities[0]) },
+      { token: "B", logprob: Math.log(probabilities[1]) },
+      { token: "C", logprob: Math.log(probabilities[2]) },
     ] } ] } } ] }),
   } as unknown as Response;
 }
 
 const CASES = [
-  { name: "emits shadowClassifier when deciderShadow=true", flag: true, expectField: true },
-  { name: "omits shadowClassifier by default", flag: undefined, expectField: false },
+  { name: "emits agreeing shadowClassifier", flag: true, fast: false, expectField: true, disagreement: false },
+  { name: "emits disagreeing shadowClassifier", flag: true, fast: true, expectField: true, disagreement: true },
+  { name: "omits shadowClassifier by default", flag: undefined, fast: false, expectField: false, disagreement: false },
 ];
 
 describe("receipts shadow wiring (Phase 4)", () => {
@@ -88,10 +90,11 @@ describe("receipts shadow wiring (Phase 4)", () => {
       process.env.USERPROFILE = dir;
       process.env.MODEL_ROUTER_RECEIPTS_DIR = path.join(dir, "receipts");
       writeOverrides(dir, {
+        experimental: { verifiedDelegateTool: true },
         ...(tc.flag !== undefined ? { enforcement: { deciderShadow: tc.flag } } : {}),
       });
       invalidateConfigCache();
-      vi.stubGlobal("fetch", vi.fn(async () => deciderResponse()));
+      vi.stubGlobal("fetch", vi.fn(async () => deciderResponse(tc.fast)));
 
       const hooks = await bootPlugin(dir);
       await hooks.tool.delegate.execute(
@@ -105,7 +108,7 @@ describe("receipts shadow wiring (Phase 4)", () => {
       expect(records.length).toBeGreaterThan(0);
       if (tc.expectField) {
         expect(records[0].shadowClassifier).toBeDefined();
-        expect(records[0].shadowClassifier!.disagreement).toBe(true); // argmax medium, native medium? probe below
+        expect(records[0].shadowClassifier!.disagreement).toBe(tc.disagreement);
         expect(records[0].shadowClassifier!.probabilities).toHaveLength(3);
       } else {
         expect(records[0].shadowClassifier).toBeUndefined();

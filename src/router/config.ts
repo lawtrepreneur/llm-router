@@ -200,6 +200,11 @@ export interface RouterConfig {
    */
   opencodeAdapter?: OpenCodeAdapterConfig;
   /**
+   * Hermes-as-a-worker transport adapter. See {@link HermesAdapterConfig}.
+   * Absent ⇒ the shipped default: mode "off", no tiers intercepted.
+   */
+  hermesAdapter?: HermesAdapterConfig;
+  /**
    * Claude-model anti-narration guardrail. When true, appends the anti-narration
    * clause to Claude orchestrator/tier prompts and runs the post-hoc narration
    * detector. Off by default: the clause costs ~162 tokens per Claude dispatch
@@ -229,6 +234,7 @@ export interface RouterState {
   enforcementMode?: "off" | "advisory" | "enforced";
   /** Persisted adapter mode so /adapter survives restarts like /preset does. */
   opencodeAdapterMode?: OpenCodeAdapterMode;
+  hermesAdapterMode?: OpenCodeAdapterMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -579,16 +585,49 @@ export const DEFAULT_OPENCODE_ADAPTER: OpenCodeAdapterConfig = {
   tierAgents: {},
 };
 
+/** Hermes transport adapter: same shape minus tierAgents (no child agents). */
+export interface HermesAdapterConfig {
+  mode: OpenCodeAdapterMode;
+  tiers: string[];
+  binary: string;
+  timeoutMs: number;
+  allowedAgents: string[];
+}
+export const DEFAULT_HERMES_ADAPTER: HermesAdapterConfig = {
+  mode: "off",
+  tiers: [],
+  binary: "/home/romeshh/.local/bin/hermes",
+  timeoutMs: 600_000,
+  allowedAgents: [],
+};
+
 function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
   if (obj.opencodeAdapter === undefined) return;
   const a = obj.opencodeAdapter;
   if (typeof a !== "object" || a === null || Array.isArray(a)) {
     throw new Error("tiers.json: 'opencodeAdapter' must be an object");
   }
-  const adapter = a as Record<string, unknown>;
+  validateAdapterShape("opencodeAdapter", a as Record<string, unknown>);
+}
+
+function validateHermesAdapter(obj: Record<string, unknown>): void {
+  if (obj.hermesAdapter === undefined) return;
+  const a = obj.hermesAdapter;
+  if (typeof a !== "object" || a === null || Array.isArray(a)) {
+    throw new Error("tiers.json: 'hermesAdapter' must be an object");
+  }
+  validateAdapterShape("hermesAdapter", a as Record<string, unknown>);
+}
+
+/** Shared adapter-shape validation. tierAgents is OpenCode-specific. */
+function validateAdapterShape(
+  key: string,
+  adapter: Record<string, unknown>,
+  opts: { requireTierAgents?: boolean } = {},
+): void {
   if (adapter.mode !== undefined && !OPENCODE_ADAPTER_MODES.includes(adapter.mode as OpenCodeAdapterMode)) {
     throw new Error(
-      "tiers.json: 'opencodeAdapter.mode' must be one of off|shadow|live",
+      `tiers.json: '${key}.mode' must be one of off|shadow|live`,
     );
   }
   if (adapter.tiers !== undefined) {
@@ -597,22 +636,22 @@ function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
       adapter.tiers.some((t) => typeof t !== "string")
     ) {
       throw new Error(
-        "tiers.json: 'opencodeAdapter.tiers' must be an array of tier names",
+        `tiers.json: '${key}.tiers' must be an array of tier names`,
       );
     }
   }
   if (adapter.binary !== undefined && (typeof adapter.binary !== "string" || !adapter.binary)) {
-    throw new Error("tiers.json: 'opencodeAdapter.binary' must be a non-empty string");
+    throw new Error(`tiers.json: '${key}.binary' must be a non-empty string`);
   }
   if (adapter.args !== undefined) {
     if (
       !Array.isArray(adapter.args) ||
       adapter.args.some((a) => typeof a !== "string")
     ) {
-      throw new Error("tiers.json: 'opencodeAdapter.args' must be an array of strings");
+      throw new Error(`tiers.json: '${key}.args' must be an array of strings`);
     }
   }
-  if (adapter.tierAgents !== undefined) {
+  if (opts.requireTierAgents && adapter.tierAgents !== undefined) {
     if (
       typeof adapter.tierAgents !== "object" ||
       adapter.tierAgents === null ||
@@ -621,7 +660,7 @@ function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
         agent => typeof agent !== "string" || !agent,
       )
     ) {
-      throw new Error("tiers.json: 'opencodeAdapter.tierAgents' must map tier names to non-empty agent names");
+      throw new Error(`tiers.json: '${key}.tierAgents' must map tier names to non-empty agent names`);
     }
   }
   if (adapter.timeoutMs !== undefined) {
@@ -630,7 +669,7 @@ function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
       !Number.isInteger(adapter.timeoutMs) ||
       adapter.timeoutMs < 1000
     ) {
-      throw new Error("tiers.json: 'opencodeAdapter.timeoutMs' must be an integer >= 1000");
+      throw new Error(`tiers.json: '${key}.timeoutMs' must be an integer >= 1000`);
     }
   }
   if (adapter.allowedAgents !== undefined) {
@@ -639,7 +678,7 @@ function validateOpenCodeAdapter(obj: Record<string, unknown>): void {
       adapter.allowedAgents.some((a) => typeof a !== "string")
     ) {
       throw new Error(
-        "tiers.json: 'opencodeAdapter.allowedAgents' must be an array of agent names",
+        `tiers.json: '${key}.allowedAgents' must be an array of agent names`,
       );
     }
   }
@@ -797,6 +836,11 @@ function validateEnforcement(obj: Record<string, unknown>): void {
           "tiers.json: enforcement.envGate must be a non-empty string",
         );
       }
+    }
+    if (enforcement.deciderShadow !== undefined && typeof enforcement.deciderShadow !== "boolean") {
+      throw new Error(
+        "tiers.json: enforcement.deciderShadow must be a boolean when defined",
+      );
     }
     if (
       enforcement.verify !== undefined &&
@@ -1042,9 +1086,9 @@ export function validateConfig(raw: unknown): RouterConfig {
   validateDelegateInstructions(obj);
   validateDispatchHeader(obj);
   validateTaskPromptRepair(obj);
-  validateFalseRefusalDetection(obj);
+validateFalseRefusalDetection(obj);
   validateOpenCodeAdapter(obj);
-
+  validateHermesAdapter(obj);
   return raw as RouterConfig;
 }
 
@@ -1164,6 +1208,7 @@ function applyTierDefaults(cfg: RouterConfig): void {
   }
   // Adapter block always present so consumers never null-check it.
   cfg.opencodeAdapter = { ...DEFAULT_OPENCODE_ADAPTER, ...(cfg.opencodeAdapter ?? {}) };
+  cfg.hermesAdapter = { ...DEFAULT_HERMES_ADAPTER, ...(cfg.hermesAdapter ?? {}) };
 }
 
 export function loadConfig(): RouterConfig {
@@ -1233,6 +1278,13 @@ export function loadConfig(): RouterConfig {
           ...DEFAULT_OPENCODE_ADAPTER,
           ...(cfg.opencodeAdapter ?? {}),
           mode: state.opencodeAdapterMode,
+        };
+      }
+      if (state.hermesAdapterMode) {
+        cfg.hermesAdapter = {
+          ...DEFAULT_HERMES_ADAPTER,
+          ...(cfg.hermesAdapter ?? {}),
+          mode: state.hermesAdapterMode,
         };
       }
     }

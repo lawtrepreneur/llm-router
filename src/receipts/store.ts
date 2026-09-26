@@ -103,8 +103,15 @@ export function validateRoutingRecord(value: unknown): string[] {
     if (own(s)) {
       if (s.unavailable !== undefined && typeof s.unavailable !== "boolean") errors.push("invalid record shadowClassifier.unavailable");
       if (s.error !== undefined && typeof s.error !== "string") errors.push("invalid record shadowClassifier.error");
-      if (s.probabilities !== undefined && (!Array.isArray(s.probabilities) || s.probabilities.length !== 3 || s.probabilities.some(p => !finite01(p))))
-        errors.push("invalid record shadowClassifier.probabilities");
+      // Exactly one valid state: unavailable XOR usable-with-probabilities.
+      if (s.unavailable === true) {
+        if (s.probabilities !== undefined) errors.push("invalid record shadowClassifier.probabilities");
+      } else {
+        if (!Array.isArray(s.probabilities) || s.probabilities.length !== 3 || s.probabilities.some(p => !finite01(p)))
+          errors.push("invalid record shadowClassifier.probabilities");
+        else if (Math.abs(s.probabilities.reduce((a: number, b: number) => a + b, 0) - 1) > 1e-6)
+          errors.push("invalid record shadowClassifier.probabilities");
+      }
     }
   }
   // Issue #13: re-decision inputs are secret-free and shape-checked.

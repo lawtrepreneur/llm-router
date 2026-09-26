@@ -590,14 +590,26 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                 options: ["fast", "medium", "heavy"],
               };
               const deciderStart = Date.now();
+              const SHADOW_OBSERVATION_TIMEOUT_MS = 1000;
               const shadowClassifier = activeCfg.enforcement?.deciderShadow !== true
                 ? undefined
                 : (async (): Promise<
                     { probabilities?: number[]; disagreement: boolean; unavailable?: boolean; error?: string; latencyMs: number }
                   > => {
-                    try {
-                      const answers = await callDecider(taskText, [deciderQuestion]);
-                      const answer = answers[0];
+                      // Phase 4: hard-timebox the decider shadow observation. If it hangs past the budget, fail closed (unavailable) instead of blocking routing.
+                      let answers: Awaited<ReturnType<typeof callDecider>> | undefined;
+                      try {
+                        answers = await withTimeout(callDecider(taskText, [deciderQuestion]), SHADOW_OBSERVATION_TIMEOUT_MS, "decider shadow observation");
+                      } catch (error) {
+                        // RouterTimeoutError: the budget won the race. Fail closed as unavailable with a full-latency observation.
+                        if (error instanceof RouterTimeoutError) {
+                          answers = undefined;
+                          return { unavailable: true, error: "shadow observation timeout", disagreement: false, latencyMs: SHADOW_OBSERVATION_TIMEOUT_MS };
+                        }
+                        throw error;
+                      }
+                      const answer = answers?.[0];
+                      if (!answer) return { unavailable: true, error: "shadow observation unavailable", disagreement: false, latencyMs: Date.now() - deciderStart };
                       const probabilities = [
                         answer.probabilities[deciderQuestion.options.indexOf("fast")] ?? 0,
                         answer.probabilities[deciderQuestion.options.indexOf("medium")] ?? 0,
@@ -608,14 +620,6 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
                         disagreement: answer.choice !== tier,
                         latencyMs: Date.now() - deciderStart,
                       };
-                    } catch (error) {
-                      return {
-                        unavailable: true,
-                        error: scrubText(String(error)).slice(0, 200),
-                        disagreement: false,
-                        latencyMs: Date.now() - deciderStart,
-                      };
-                    }
                   })();
               const routeCandidates = Object.keys(tiersForCost).map(routeTier => ({ tier: routeTier }));
               const route = decideRoute(

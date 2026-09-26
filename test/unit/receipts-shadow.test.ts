@@ -43,8 +43,8 @@ describe("receipt shadow observations", () => {
   it("drops unknown nested shadow fields on persist", () => {
     directory = mkdtempSync(join(tmpdir(), "router-receipts-shadow-"));
     const store = createReceiptStore(join(directory, "records.jsonl"));
-    store.append({ ...record(), shadowClassifier: { disagreement: false, latencyMs: 3, smuggled: "x" } } as RoutingRecord);
-    expect(store.read()[0].shadowClassifier).toEqual({ disagreement: false, latencyMs: 3 });
+    store.append({ ...record(), shadowClassifier: { disagreement: false, latencyMs: 3, probabilities: [0.5, 0.3, 0.2], smuggled: "x" } } as RoutingRecord);
+    expect(store.read()[0].shadowClassifier).toEqual({ disagreement: false, latencyMs: 3, probabilities: [0.5, 0.3, 0.2] });
   });
 
   it("reports observations and disagreements", () => {
