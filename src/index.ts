@@ -13,6 +13,7 @@ import {
   findProjectOverride,
 } from "./router/config";
 import type { RouterConfig, TierConfig, Preset, ModeConfig } from "./router/config";
+import { registerAdapter, rollBackAdapters } from "./adapter/registry";
 import { buildAgentOptions, warnAgentOptionsEffortOnce } from "./router/agent-options";
 import { selectTierPrompt, TOOL_AUTHORITY_CLAUSE } from "./router/prompts";
 import { stripDelegateInstructions } from "./router/instructions";
@@ -186,7 +187,7 @@ function buildRouterOutput(cfg: RouterConfig, args: string): string {
   if (sub === "adapter") {
     const requested = (tokens[1] ?? "").toLowerCase();
     if (requested === "rollback") {
-      writeState({ opencodeAdapterMode: "off" });
+      rollBackAdapters();
       invalidateConfigCache();
       return "[router] all adapters rolled back to off";
     }
@@ -288,6 +289,9 @@ const ModelRouterPlugin: Plugin = async (ctx: PluginInput) => {
 
   // Per-plugin-instance session store: owns subagentSessionIDs and subagentCapState.
   const sessionStore = createSessionStore();
+  // Register the router's own adapter at plugin init so /adapter rollback
+  // switches its persisted opencodeAdapterMode to "off" (mirrors config.ts).
+  registerAdapter({ name: "opencode", modeKey: "opencodeAdapterMode" });
   let systemDebugLogged = false;
   let dispatchDebugLogged = false;
 
