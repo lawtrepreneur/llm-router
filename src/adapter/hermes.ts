@@ -1,19 +1,15 @@
 /**
- * src/adapter/hermes.ts — Hermes-as-a-worker adapter stub.
+ * src/adapter/hermes.ts — Hermes-as-a-worker adapter.
  *
- * Thin adapter that will translate a normalized RoutingDecision into a
- * Hermes hermes-handoff invocation. Mirrors the shape of opencode.ts:
- * impure execution is isolated here; wiring.ts holds pure mode/eligibility
- * decisions; boundary.ts produces the normalized decision that this adapter
- * consumes.
+ * Thin transport: invokes the Hermes one-shot CLI and returns the raw result.
+ * Mirrors opencode.ts: impure execution isolated here; recursion guarded at
+ * process level via HERMES_CHILD_ENV.
  *
- * STATUS: stub — not yet implemented. Blocked on:
- *   - #12 (independent dimension schema + RoutingDecision extension)
- *   - Hermes hermes-handoff contract (external; see docs/plans/hermes-adapter-map.md)
- *
- * IMPURE: will use Node child_process or hermes-handoff SDK. Kept isolated so
- * callers stay testable by injecting a fake run function.
+ * IMPURE: child_process. Kept isolated so callers stay testable by injecting
+ * a fake run function.
  */
+import { execFile } from "node:child_process";
+
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -26,7 +22,6 @@ export class HermesAdapterError extends Error {
     | "timeout"
     | "spawn"
     | "exit"
-    | "handoff";
   readonly cause?: Error;
   constructor(
     reason: HermesAdapterError["reason"],
@@ -64,7 +59,7 @@ export interface HermesRunResult {
 }
 
 export interface HermesRunDeps {
-  /** Injectable exec for tests. No default until handoff contract is known. */
+  /** Injectable exec for tests. Falls back to the hermes CLI runner when omitted. */
   exec?: (
     target: string,
     prompt: string,
@@ -90,20 +85,47 @@ export interface HermesAdapterConfig {
 }
 
 // ---------------------------------------------------------------------------
-// runHermes — stub, not yet implemented
+// Default CLI runner
+// ---------------------------------------------------------------------------
+
+const HERMES_BINARY = "/home/romeshh/.local/bin/hermes";
+
+/**
+ * Default one-shot Hermes runner: `hermes chat --quiet --oneshot --in <cwd>
+ * -q <prompt>`. Uses the shared opencode execFileAsync-style spawn so timeouts
+ * and buffer caps behave identically.
+ */
+async function hermesCliExec(
+  _target: string,
+  prompt: string,
+  options: { timeoutMs: number; env: NodeJS.ProcessEnv; cwd: string },
+): Promise<{ payload: string }> {
+  const { stdout } = await execFile(
+    HERMES_BINARY,
+    ["chat", "--quiet", "--oneshot", "--in", options.cwd, "-q", prompt],
+    {
+      timeout: options.timeoutMs,
+      cwd: options.cwd,
+      env: options.env,
+      maxBuffer: 10 * 1024 * 1024,
+      encoding: "utf8",
+    },
+  ) as unknown as { stdout: string };
+  return { payload: stdout };
+}
+
+// ---------------------------------------------------------------------------
+// runHermes
 // ---------------------------------------------------------------------------
 
 /**
  * Invoke the Hermes handoff with a normalized prompt and return the raw
  * result. Recursion is prevented via the HERMES_CHILD_ENV guard.
- *
- * NOT IMPLEMENTED — see file-level STATUS comment.
- * Signature is final; body will be filled in after #12 + Hermes contract land.
  */
 export async function runHermes(
   cfg: Pick<HermesAdapterConfig, "timeoutMs">,
   prompt: string,
-  _cwd: string,
+  cwd: string,
   deps: HermesRunDeps = {},
   _agent?: string,
 ): Promise<HermesRunResult> {
@@ -114,20 +136,12 @@ export async function runHermes(
     );
   }
 
-  if (!deps.exec) {
-    // ponytail: deliberate NotImplemented until #12 + handoff contract land.
-    throw new HermesAdapterError(
-      "handoff",
-      "HermesRunDeps.exec is required — Hermes handoff contract not yet defined (blocked on #12)",
-    );
-  }
-
   const startedAt = deps.now?.() ?? Date.now();
+  const childEnv = { ...process.env, HERMES_HOME: "/home/romeshh/.hermes", [HERMES_CHILD_ENV]: "1" };
   try {
-    const { payload } = await deps.exec(prompt, prompt, {
-      timeoutMs: cfg.timeoutMs,
-      env: { ...process.env, [HERMES_CHILD_ENV]: "1" },
-    });
+    const { payload } = deps.exec
+      ? await deps.exec(prompt, prompt, { timeoutMs: cfg.timeoutMs, env: childEnv })
+      : await hermesCliExec(prompt, prompt, { timeoutMs: cfg.timeoutMs, env: childEnv, cwd });
     const durationMs = (deps.now?.() ?? Date.now()) - startedAt;
     return { payload, durationMs };
   } catch (err: any) {
