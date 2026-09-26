@@ -11,3 +11,5 @@ else if (command === "redecide") console.log(JSON.stringify(store.reDecide(recor
 else if (command === "report") console.log(JSON.stringify(store.report(records), null, 2));
 else if (command === "eval") console.log(JSON.stringify(saveEvalGate(join(dir, "eval-gate.json"), store.report(records)), null, 2));
 else throw new Error(`unknown receipts command: ${command}`);
+// Issue #14: corrupt records were warned per line during read; exit non-zero.
+if (store.lastRejected() > 0) process.exitCode = 1;

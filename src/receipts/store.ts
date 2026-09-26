@@ -37,6 +37,8 @@ export type RoutingRecord = {
 
 export type ReceiptStore = {
   append(record: RoutingRecord): void;
+  /** Issue #14: number of records rejected as corrupt during the last read(). */
+  lastRejected(): number;
   read(): RoutingRecord[];
   replay(records?: RoutingRecord[]): ReplayResult;
   reDecide(records?: RoutingRecord[]): ReDecisionResult;
@@ -140,39 +142,70 @@ function allowlistRecord(record: RoutingRecord): RoutingRecord {
   return out;
 }
 
-function parseLines(text: string): RoutingRecord[] {
+/**
+ * Issue #14: parse lines loudly but tolerantly — a corrupt/invalid record is
+ * rejected with a stderr warning (line number + reason), valid siblings
+ * continue. Returns the count of rejected records so callers can exit non-zero.
+ */
+export function parseLines(text: string): { records: RoutingRecord[]; rejected: number } {
   const records: RoutingRecord[] = [];
+  let rejected = 0;
   for (const [i, line] of text.split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
     let value: unknown;
-    try { value = JSON.parse(line); } catch { throw new Error(`malformed receipt record at line ${i + 1}`); }
+    try { value = JSON.parse(line); } catch { console.error(`receipts: rejecting line ${i + 1}: malformed JSON`); rejected++; continue; }
+    // Unknown fields must be rejected even for legacy records — only the
+    // documented known fields (minus adapterMode) are migrated, never dropped.
+    const isLegacy = own(value) && value.kind === "routing" && value.version === 1 && value.adapterMode === undefined;
+    // Legacy records must NOT get silently allowlisted — an unknown field on
+    // a pre-adapterMode record is still corruption and gets rejected loudly.
+    const legacyUnknownFields = isLegacy
+      ? Object.keys(value as Record<string, unknown>).filter(k => !(RECORD_FIELDS as readonly string[]).includes(k))
+      : [];
+    if (legacyUnknownFields.length) {
+      for (const key of legacyUnknownFields) console.error(`receipts: rejecting line ${i + 1}: legacy record carries unknown field ${key}`);
+      rejected += legacyUnknownFields.length;
+      continue;
+    }
     // Legacy V1 records written before adapterMode existed: explicit migration
     // to the documented default, then hash is verified against migrated fields.
-    if (own(value) && value.kind === "routing" && value.version === 1 && value.adapterMode === undefined) {
+    if (isLegacy) {
       const migrated = allowlistRecord(value as RoutingRecord) as RoutingRecord;
       migrated.adapterMode = LEGACY_DEFAULT_ADAPTER_MODE;
       migrated.receiptHash = receiptHashOf(migrated);
       value = migrated;
     }
-    const errors = validateRoutingRecord(value);
-    if (errors.length) throw new Error(`invalid receipt record at line ${i + 1}: ${errors.join("; ")}`);
+    // Unknown top-level fields are rejected on read (write still allowlists).
+    const unknownFields = own(value) ? Object.keys(value).filter(k => !(RECORD_FIELDS as readonly string[]).includes(k)) : [];
+    const errors = [...unknownFields.map(f => `unknown field ${f}`), ...validateRoutingRecord(value)];
+    if (errors.length) {
+      console.error(`receipts: rejecting line ${i + 1}: ${errors.join("; ")}`);
+      rejected++;
+      continue;
+    }
     records.push(value as RoutingRecord);
   }
-  return records;
+  return { records, rejected };
 }
 
 export function createReceiptStore(path: string): ReceiptStore {
   // Memoized read so replay/report observe appended records and in-memory
   // tampering checks without a redundant disk hit per call.
   let memo: RoutingRecord[] | undefined;
+  let rejectedLastRead = 0;
   const read = (): RoutingRecord[] => {
     if (!memo) {
-      try { memo = parseLines(readFileSync(path, "utf8")); }
+      try {
+        const parsed = parseLines(readFileSync(path, "utf8"));
+        memo = parsed.records;
+        rejectedLastRead = parsed.rejected;
+      }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") memo = []; else throw error; }
     }
     return memo;
   };
   return {
+    lastRejected: () => rejectedLastRead,
     append(record) {
       const errors = validateRoutingRecord(record);
       if (errors.length) throw new Error(`refusing invalid receipt: ${errors.join("; ")}`);
