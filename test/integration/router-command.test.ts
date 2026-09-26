@@ -66,6 +66,29 @@ describe("router-command integration", () => {
     expect(resolveEnforcementMode({ config: loadConfig(), env: {} }).mode).toBe("off");
   });
 
+  it("adapter live blocked without passing eval gate; state not persisted", async () => {
+    const out = { parts: [] as any[] };
+    await hooks["command.execute.before"]({ command: "router", arguments: "adapter live" }, out);
+    expect(out.parts[0].text).toContain("live adapter blocked");
+    invalidateConfigCache();
+    expect(loadConfig().opencodeAdapter?.mode).not.toBe("live");
+  });
+  it("adapter live blocked when eval gate failed; adapter rollback persists off", async () => {
+    // failed gate
+    const gatePath = join(testHomeDir, "eval-gate.json");
+    writeFileSync(gatePath, JSON.stringify({ passed: false, checkedAt: new Date().toISOString(), reportHash: "h", reason: "failures" }));
+    process.env.MODEL_ROUTER_EVAL_GATE = gatePath;
+    const out = { parts: [] as any[] };
+    await hooks["command.execute.before"]({ command: "router", arguments: "adapter live" }, out);
+    expect(out.parts[0].text).toContain("live adapter blocked");
+    delete process.env.MODEL_ROUTER_EVAL_GATE;
+    // rollback
+    const out2 = { parts: [] as any[] };
+    await hooks["command.execute.before"]({ command: "router", arguments: "adapter rollback" }, out2);
+    expect(out2.parts[0].text).toContain("rolled back to off");
+    invalidateConfigCache();
+    expect(loadConfig().opencodeAdapter?.mode).toBe("off");
+  });
   it("enforce with no mode shows current + usage", async () => {
     const out = { parts: [] as any[] };
     await hooks["command.execute.before"]({ command: "router", arguments: "enforce" }, out);

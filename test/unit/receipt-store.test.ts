@@ -2,8 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createReceiptStore, replayReceipts, type RoutingRecord } from "../../src/receipts/store";
-import { stableHash } from "../../src/contract/routing-receipt";
+import { createReceiptStore, receiptHashOf, replayReceipts, type RoutingRecord } from "../../src/receipts/store";
 
 let directory: string;
 afterEach(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
@@ -31,11 +30,27 @@ describe("receipt store", () => {
     expect(() => store.append({ ...record(), kind: "secret" } as never)).toThrow(/invalid receipt/);
   });
 
+  it("drops unknown nested fields from escalation, verification and downgrade on persist", () => {
+    directory = mkdtempSync(join(tmpdir(), "router-receipts-"));
+    const store = createReceiptStore(join(directory, "records.jsonl"));
+    store.append({
+      ...record(),
+      escalation: { occurred: true, count: 1, reason: "fail", smuggled: "x" },
+      verification: { status: "passed", method: "deterministic", smuggled: "y" },
+      downgrade: { from: "heavy", to: "medium", reason: "cost", smuggled: "z" },
+    } as never);
+    const line = JSON.parse((require("node:fs").readFileSync(join(directory, "records.jsonl"), "utf8") as string).trim());
+    expect(line.escalation).toEqual({ occurred: true, count: 1, reason: "fail" });
+    expect(line.verification).toEqual({ status: "passed", method: "deterministic" });
+    expect(line.downgrade).toEqual({ from: "heavy", to: "medium", reason: "cost" });
+    expect(JSON.stringify(line)).not.toContain("smuggled");
+  });
+
   it("replays deterministically: same version metadata and inputs yield the same receipt hash", () => {
     const base = { ...record(), classifierVersion: "fixture-1" };
     const withHash = (r: RoutingRecord): RoutingRecord => ({
       ...r,
-      receiptHash: stableHash({ policy: r.policyVersion, registry: r.registryVersion, classifierVersion: r.classifierVersion, schemaHash: r.schemaHash, candidateRegistryHash: r.candidateRegistryHash, intended: r.intendedTarget, actual: r.actualTarget, escalation: r.escalation }),
+      receiptHash: receiptHashOf(r),
     });
     // Same input + same versions → identical hash, deterministic replay.
     const a = replayReceipts([withHash({ ...base, id: "a" })]);
@@ -48,11 +63,12 @@ describe("receipt store", () => {
   });
 
   it("changes receipt hash when each version-metadata field changes independently", () => {
-    const hashOf = (r: RoutingRecord): string => stableHash({ policy: r.policyVersion, registry: r.registryVersion, classifierVersion: r.classifierVersion, schemaHash: r.schemaHash, candidateRegistryHash: r.candidateRegistryHash, intended: r.intendedTarget, actual: r.actualTarget, escalation: r.escalation });
+    const hashOf = receiptHashOf;
     const base: RoutingRecord = { ...record(), classifierVersion: "v1", schemaHash: "schema-a", candidateRegistryHash: "reg-a" };
     const baseHash = hashOf(base);
     expect(hashOf({ ...base, classifierVersion: "v2" })).not.toBe(baseHash);
     expect(hashOf({ ...base, schemaHash: "schema-b" })).not.toBe(baseHash);
     expect(hashOf({ ...base, candidateRegistryHash: "reg-b" })).not.toBe(baseHash);
+    expect(hashOf({ ...base, outcome: "failed" })).not.toBe(baseHash);
   });
 });
