@@ -13,8 +13,12 @@ export function decideRouteFromEvidence(
   registry: CandidateRegistry,
   request: RoutingRequest = { prompt: "" },
   decidedAt?: string,
+  options?: Pick<RouteBoundaryOptions, "mode" | "requestId" | "producer">,
 ): RoutingDecision {
-  return composeToDecision(evidence, registry, request, decidedAt);
+  const decision = composeToDecision(evidence, registry, request, decidedAt);
+  if (options?.mode !== undefined) decision.receipt.mode = options.mode;
+  if (options?.requestId !== undefined) decision.receipt.requestId = options.requestId;
+  return decision;
 }
 
 export type RouteChooser = (
